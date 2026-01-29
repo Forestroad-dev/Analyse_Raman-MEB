@@ -157,7 +157,7 @@ L'image RGB (3 canaux) est chargée depuis le fichier image, puis convertie en u
 
 **Formule utilisée (Standard ITU-R BT.601)**
 
-$$\text{Intensité\_Gris} = 0.299 \times R + 0.587 \times G + 0.114 \times B$$
+$$\text{Intensité Gris} = 0.299 \times R + 0.587 \times G + 0.114 \times B$$
 
 **Raison de ces poids** :
 - L'œil humain est plus sensible au **vert** (0.587), ce qui explique le poids élevé
@@ -1282,7 +1282,7 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 - Plus proche de 0 = plus allongé/dentelé
 
 **Solidity** = mesure de la densité
-- Formule : $\text{Area} / \text{ConvexHull\_Area}$
+- Formule : $\text{Area} / \text{ConvexHull Area}$
 - Particule lisse/compacte = proche de 1.0
 - Particule poreuse/dentelée = < 0.8
 
