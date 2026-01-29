@@ -81,7 +81,3 @@ Thumbs.db
 .LSOverride
 *.sublime-workspace
 
-# ============================================
-# PRÉSENTATION (OPTIONNEL)
-# ============================================
-# results/**/*.pptx
