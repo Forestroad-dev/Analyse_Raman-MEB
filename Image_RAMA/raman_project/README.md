@@ -35,13 +35,33 @@ Transformer une image Raman en informations quantitatives et interprétables :
 
 ## 🚀 Démarrage rapide
 
-### Première exécution (setup)
+### Installation des dépendances
+
+**⚠️ Important : NumPy 1.x required**
+
+NumPy 2.x a des changements ABI incompatibles avec pandas/pyarrow. Ce projet nécessite NumPy 1.26.4.
+
 ```powershell
 cd Image_RAMA\raman_project
+
+# Créer un environnement virtuel Python 3.10+
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
+# Installer les dépendances exactes
+pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 ```
+
+**Dépendances** :
+- `numpy==1.26.4` (⚠️ Compatible 1.x uniquement)
+- `pandas==2.2.3`
+- `matplotlib==3.8.4`
+- `scikit-learn==1.4.2`
+- `scipy==1.11.4`
+- `opencv-python==4.8.1.78`
+
+Voir [requirements.txt](requirements.txt) pour la liste complète.
 
 ### Exécution du pipeline
 
