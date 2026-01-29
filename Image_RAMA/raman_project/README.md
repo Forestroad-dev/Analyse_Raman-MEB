@@ -37,20 +37,34 @@ Transformer une image Raman en informations quantitatives et interprétables :
 
 ### Installation des dépendances
 
-**⚠️ Important : NumPy 1.x required**
+**⚠️ CRITIQUE : NumPy 1.x required - NE PAS utiliser l'environnement Anaconda de base**
 
 NumPy 2.x a des changements ABI incompatibles avec pandas/pyarrow. Ce projet nécessite NumPy 1.26.4.
 
+**IMPORTANT** : Vous DEVEZ créer un environnement virtuel propre. N'utilisez PAS l'environnement Anaconda de base qui contient NumPy 2.4.1.
+
 ```powershell
+# 1. Naviguer vers le projet
 cd Image_RAMA\raman_project
 
-# Créer un environnement virtuel Python 3.10+
+# 2. Créer un environnement virtuel Python 3.10+ (OBLIGATOIRE)
 python -m venv .venv
+
+# 3. Activer l'environnement virtuel
 .\.venv\Scripts\Activate.ps1
 
-# Installer les dépendances exactes
+# 4. Vérifier que vous êtes dans le bon environnement
+python -c "import sys; print(sys.prefix)"  # Doit afficher le chemin vers .venv
+
+# 5. Installer les dépendances exactes
 pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
+
+# 6. Vérifier NumPy (doit afficher 1.26.4)
+python -c "import numpy; print(numpy.__version__)"
+
+# 7. Vérifier tous les packages (recommandé)
+python verify_environment.py
 ```
 
 **Dépendances** :
@@ -62,6 +76,39 @@ pip install -r requirements.txt
 - `opencv-python==4.8.1.78`
 
 Voir [requirements.txt](requirements.txt) pour la liste complète.
+
+### Dépannage : Erreur NumPy 2.x
+
+**Symptôme** : `ImportError: A module that was compiled using NumPy 1.x cannot be run in NumPy 2.4.1`
+
+**Cause** : Vous utilisez l'environnement Anaconda de base (`c:\ProgramData\Anaconda3.python`) au lieu d'un environnement virtuel.
+
+**Solution** :
+```powershell
+# 1. Désactiver Anaconda si activé
+conda deactivate
+
+# 2. Créer et activer un environnement virtuel propre
+cd Image_RAMA\raman_project
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 3. Réinstaller les dépendances
+pip install -r requirements.txt
+
+# 4. Vérifier NumPy
+python -c "import numpy; print(numpy.__version__)"  # Doit afficher 1.26.4
+```
+
+**Alternative avec Conda** (si vous préférez utiliser Conda) :
+```powershell
+# Créer un environnement Conda dédié
+conda create -n raman_project python=3.10
+conda activate raman_project
+
+# Installer avec pip (pas conda install)
+pip install -r requirements.txt
+```
 
 ### Exécution du pipeline
 
