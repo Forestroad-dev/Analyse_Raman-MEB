@@ -52,7 +52,7 @@ Analyser une image Raman pour **détecter automatiquement** les particules, les 
    - Garder le RGB ajoute de la complexité inutile
 
 2. **Simplification mathématique**
-   $$\text{Intensité\_Gris} = 0.299 \times R + 0.587 \times G + 0.114 \times B$$
+   $$\text{Intensité Gris} = 0.299 \times R + 0.587 \times G + 0.114 \times B$$
    (norme standard)
    - Réduit la dimensionnalité : 3 canaux → 1 canal
    - Améliore la rapidité des calculs
@@ -435,7 +435,7 @@ Les **7 features** extraites ont des **échelles radicalement différentes** :
 **Solution : Normalisation Z-score (StandardScaler)**
 
 Pour chaque feature individuellement :
-$$x_{\text{normalisé}} = \frac{x - \mu}{\sigma}$$
+$$x_{norm} = \frac{x - \mu}{\sigma}$$
 
 où:
 - $\mu$ = moyenne de la feature
@@ -589,18 +589,19 @@ $$s(i) = \frac{b(i) - a(i)}{\max(a(i), b(i))}$$
 
 **Définition** : Inertie = somme des distances **au carré** de chaque point à son centroïde assigné
 
-$$I = \sum_{i=1}^{n} ||x_i - \text{centroïde}_{\text{assigné}(i)}||^2$$
+$$I = \sum_{i=1}^{n} ||x_i - C_i||^2$$
+où $C_i$ est le centroïde assigné au point i
 
 **Problématique** : L'inertie **décroît toujours** avec k (augmenter k réduit les distances) 
 - k=1 : inertie maximale (tous dans 1 cluster)
 - k=n : inertie minimale = 0 (chaque point = son propre cluster)
 
 **Solution** : Normaliser par la valeur maximale
-$$I_{\text{norm}} = \frac{I_k}{I_{\max}}$$
+$$I_n = \frac{I_k}{I_{max}}$$
 
-où $I_{\max}$ = inertie pour k=1 (tous dans 1 cluster)
+où $I_{max}$ = inertie pour k=1 (tous dans 1 cluster)
 
-**Résultat** : $I_{\text{norm}} \in [0, 1]$
+**Résultat** : $I_n \in [0, 1]$
 
 **Interprétation**
 - Proche de 0 : clusters très compacts (k élevé)
@@ -612,7 +613,7 @@ où $I_{\max}$ = inertie pour k=1 (tous dans 1 cluster)
 
 **Décision : Fusionner les 2 métriques**
 
-$$\text{Score}_{\text{final}}(k) = 0.7 \times \text{Silhouette}(k) + 0.3 \times (1 - I_{\text{norm}}(k))$$
+$$\text{Score}_{final}(k) = 0.7 \times \text{Silhouette}(k) + 0.3 \times (1 - I_n(k))$$
 
 **Justification des poids**
 
@@ -868,7 +869,7 @@ OUTPUT : Tableau avec colonnes PC1, PC2, PC3 pour chaque particule
 
 Chaque composante principale est une **combinaison linéaire** des features originales :
 
-$$PC1 = a_1 \times \text{Size} + a_2 \times \text{Circularity} + ... + a_6 \times \text{Perimeter}$$
+$$PC_1 = a_1 \times \text{Size} + a_2 \times \text{Circularity} + ... + a_6 \times \text{Perimeter}$$
 
 Les coefficients (a₁, a₂, ..., a₆) indiquent la **contribution** de chaque feature original à PC1.
 
@@ -982,7 +983,7 @@ L'algorithme fonctionne par **balayage systématique** :
 | Métrique | Formule | Logique |
 |----------|---------|---------|
 | **Distance Wasserstein** | $\sum\|\text{CDF}_{\text{local}}(i) - \text{CDF}_{\text{global}}(i)\|$ | **Robuste** pour comparer distributions. Mesure le "travail" à faire pour transformer une distribution en l'autre. Insensible aux classes rares |
-| **Entropie** | $H = -\sum_{c} p_c \log_2(p_c)$ où $p_c$ = proportion cluster c | **Mesure la diversité**. H=0 si un seul cluster, H=max si tous équilibrés. Favorise les fenêtres avec tous les clusters en proportions égales |
+| **Entropie** | $H = -\sum_c p_c \log_2(p_c)$ où $p_c$ = proportion cluster c | **Mesure la diversité**. H=0 si un seul cluster, H=max si tous équilibrés. Favorise les fenêtres avec tous les clusters en proportions égales |
 | **Min count** | $\min(\text{count}_c)$ pour chaque cluster c | **Évite les zones biaisées**. Une fenêtre dominée par 1 cluster = peu représentative. Exiger min ≥ 5 particules/cluster |
 
 **Pondérations (Poids des critères)**
@@ -1314,7 +1315,7 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 - > 0.5 : très bon | 0.3-0.5 : acceptable | < 0.3 : mauvais
 
 **Inertie (somme variance intra-cluster)**
-- $I = \sum ||x_i - \text{centroïde}(x_i)||^2$
+- $I = \sum ||x_i - C_i||^2$ où $C_i$ est le centroïde assigné
 - Mesure compacité : petite = clusters resserrés
 - Problème : toujours décroît avec k → normaliser
 
