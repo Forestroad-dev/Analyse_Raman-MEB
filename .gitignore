@@ -1,0 +1,87 @@
+# ============================================
+# ENVIRONNEMENT VIRTUEL
+# ============================================
+.venv/
+venv/
+env/
+.Python
+*.egg-info/
+dist/
+build/
+
+# ============================================
+# CACHE PYTHON
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.eggs/
+*.egg
+
+# ============================================
+# IDE ET ÉDITEURS
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ============================================
+# CONFIGURATION LOCALE ET SECRETS
+# ============================================
+.env
+.env.local
+.env.*.local
+secrets/
+config.local.json
+
+# ============================================
+# DONNÉES BRUTES (NE PAS COMMITER)
+# ============================================
+data/
+data/raw/
+data/processed/
+*.jpg
+*.png
+*.tif
+*.tiff
+images/
+
+# ============================================
+# RÉSULTATS ET SORTIES GÉNÉRÉES
+# ============================================
+results/
+output/
+outputs/
+Image_RAMA/raman_project/results/
+Image_RAMA/raman_project/notebooks/**/*.csv
+Image_RAMA/raman_project/notebooks/**/*.png
+Image_RAMA/raman_project/notebooks/**/*.json
+
+# ============================================
+# FICHIERS TEMPORAIRES
+# ============================================
+*.log
+*.pkl
+*.joblib
+*.npy
+*.npz
+tmp/
+temp/
+*.tmp
+
+# ============================================
+# OS SPÉCIFIQUES
+# ============================================
+Thumbs.db
+.AppleDouble
+.LSOverride
+*.sublime-workspace
+
+# ============================================
+# PRÉSENTATION (OPTIONNEL)
+# ============================================
+# results/**/*.pptx

@@ -1,0 +1,6 @@
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.per-file-ignores]
+"**/notebooks/*.ipynb" = ["E402", "E702"]
+"**/notebooks_executed/*.ipynb" = ["E402", "E702"]

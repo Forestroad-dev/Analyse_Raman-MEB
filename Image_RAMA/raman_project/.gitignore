@@ -1,0 +1,84 @@
+# ============================================
+# ENVIRONNEMENT VIRTUEL ET DÉPENDANCES
+# ============================================
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# ============================================
+# CACHE PYTHON
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+
+# ============================================
+# IDE ET ÉDITEURS
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ============================================
+# ENVIRONNEMENT (SECRETS, CLÉS, CONFIG LOCALE)
+# ============================================
+.env
+.env.local
+*.env
+secrets/
+
+# ============================================
+# DONNÉES BRUTES (IMAGES) - À NE PAS COMMITER
+# ============================================
+data/raw/
+data/raw/**/*
+
+# ============================================
+# RÉSULTATS ET SORTIES CALCULÉES
+# ============================================
+# Ne pas inclure les fichiers générés automatiquement
+results/**/*.png
+results/**/*.jpg
+results/**/*.tif
+results/**/*.csv
+results/**/*.json
+results/particle_pipeline/
+results/analysis/
+results/figures/
+results/tables/
+results/reports/
+
+# ============================================
+# NOTEBOOKS : EXCLURE LES SORTIES GÉNÉRÉES
+# ============================================
+notebooks/**/*.csv
+notebooks/**/*.pkl
+notebooks/**/*.npz
+notebooks/results/
+
+# ============================================
+# FICHIERS TEMPORAIRES ET DE SORTIE
+# ============================================
+outputs/
+tmp/
+temp/
+*.log
+*.pkl
+*.joblib
+*.npy
+*.npz
+
+# ============================================
+# PRÉSENTATION (OPTIONNEL)
+# ============================================
+# Décommenter si vous ne voulez pas de pptx
+# results/*.pptx
