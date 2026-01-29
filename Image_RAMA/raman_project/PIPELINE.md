@@ -52,9 +52,8 @@ Analyser une image Raman pour **détecter automatiquement** les particules, les 
    - Garder le RGB ajoute de la complexité inutile
 
 2. **Simplification mathématique**
-   ```
-   Intensité_Gris = 0.299×R + 0.587×G + 0.114×B  (norme standard)
-   ```
+   $$\text{Intensité\_Gris} = 0.299 \times R + 0.587 \times G + 0.114 \times B$$
+   (norme standard)
    - Réduit la dimensionnalité : 3 canaux → 1 canal
    - Améliore la rapidité des calculs
 
@@ -407,7 +406,7 @@ Ajouter tous ces paramètres dans une ligne du tableau (DataFrame)
 
 | Dimension | Features | Formule | Raison |
 |-----------|----------|---------|--------|
-| **Taille** | Area | $\text{Size\_Score} = \text{Area}$ | Proxy croissance |
+| **Taille** | Area | $\text{Size}_{\text{Score}} = \text{Area}$ | Proxy croissance |
 | **Forme** | Circularity, Solidity, AspectRatio | $\text{Shape} = 0.4×\text{Circ} + 0.4×\text{Solid} + 0.2/(1+AR)$ | Combine compacité |
 | **Intensité** | MeanIntensity | $\text{Intensity} = I$ | Proxy composition |
 
