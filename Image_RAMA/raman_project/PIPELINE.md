@@ -11,7 +11,7 @@
 8. [FAQ & Troubleshooting](#faq--troubleshooting)
 9. [Tableau de sensibilité des paramètres](#tableau-de-sensibilité-des-paramètres)
 10. [Glossaire - Termes scientifiques](#glossaire---termes-scientifiques)
-11. [Interprétation physique des 12 types observés](#interprétation-physique-des-12-types-observés)
+11. [Interprétation physique des types combinés](#interprétation-physique-des-types-combinés)
 12. [Bonnes pratiques & Checklist pré-analyse](#bonnes-pratiques--checklist-pré-analyse)
 13. [Diagrammes & Schémas visuels](#diagrammes--schémas-visuels)
 14. [Validation & Qualité assurance](#validation--qualité-assurance)
@@ -116,13 +116,14 @@ Analyser une image Raman pour **détecter automatiquement** les particules, les 
 │ 4. CLUSTERING MULTI-PARAMÈTRES             │
 │    • Normalization + pondération           │
 │    • KMeans, auto-détection k (6-10)       │
+│    • Interprétation clusters (labels/desc) │
 │    • Score : silhouette (70%) + inertie(30%)
 └────────────┬─────────────────────────────┘
              ↓
 ┌────────────────────────────────────────────┐
-│ 5. CLASSIFICATION PHYSIQUE                 │
-│    • Rules-based sur intensité/taille/forme│
-│    • Sortie : 10-12 types physiques        │
+│ 5. CLASSIFICATION COMBINÉE                 │
+│    • Intensité × Taille × Forme            │
+│    • Sortie : 12 types combinés            │
 └────────────┬─────────────────────────────┘
              ↓
 ┌────────────────────────────────────────────┐
@@ -656,146 +657,89 @@ Chercher k avec score maximal
 
 ---
 
-### **ÉTAPE 5 : Classification Physique (Rule-Based)**
+#### 4.7 - Interprétation physique des clusters (Cluster_Label / Cluster_Description)
+
+**Objectif** : Donner une **interprétation physique lisible** à chaque cluster KMeans.
+
+**Principe** : On calcule les **moyennes physiques** d'un cluster puis on attribue :
+- **Taille** (basée sur l'aire en µm²)
+- **Forme** (Circularité, AspectRatio, Solidité)
+- **Intensité** (MeanIntensity)
+
+**Conversion d'aire**
+Si `Area_um2` n'existe pas, elle est calculée via :
+$$\text{Area}_{\mu m^2} = \text{Area}_{px^2} \times \text{PX\_AREA\_TO\_UM2}$$
+
+**Règles de décision**
+
+**Taille** (µm²) :
+- < 50 → `Fine`
+- < 300 → `Moyenne`
+- ≥ 300 → `Grosse`
+
+**Forme** (priorités) :
+- `Fibre` si `AspectRatio > 2.0`
+- `Sphere` si `Circularity > 0.85`
+- `Complexe` si `Circularity < 0.50`
+- `Cristalline` si `Solidity > 0.90`
+- sinon `Compacte`
+
+**Intensité** (0-255) :
+- > 120 → `Claire`
+- < 60 → `Sombre`
+- sinon `Grise`
+
+**Sortie**
+- `Cluster_Label` : format `Taille_Forme_Intensite` (ex: `Moyenne_Fibre_Grise`)
+- `Cluster_Description` : phrase descriptive (ex: "Particules de taille moyenne, de forme allongée/fibreuse et d'apparence grise.")
+
+**Résultat** : Chaque cluster reçoit un **label** court et une **description** textuelle ajoutés dans `df_particles`.
+
+---
+
+### **ÉTAPE 5 : Classification combinée (Intensity × Size × Shape)**
 
 #### Concept
 
-**Différence clustering vs classification**
-- **Clustering** : groupes mathématiques (k clusters)
-- **Classification** : types physiquement interprétables (~10-12 types)
+**Objectif** : Créer un **type physique combiné** simple et robuste pour chaque particule.
 
-**Approche : Arbre de décision hiérarchique**
+**Principe** : Combiner trois dimensions faciles à interpréter :
+- **Intensité** (Noir / Gris / Blanc)
+- **Taille** (Petit / Grand)
+- **Forme** (Rond / Anguleux)
 
+**Colonnes utilisées**
+- Intensité : `Intensity_Score` si disponible, sinon `MeanIntensity`
+- Taille : `Size_Score` si disponible, sinon `Area_px2`
+- Forme : `Shape_Score` si disponible, sinon `Circularity`
+
+**Seuils**
+- Intensité : `intensity_low = 85`, `intensity_high = 170`
+- Taille : `size_threshold = 150`
+- Forme : `shape_threshold = 0.7`
+
+**Règles**
 ```
-IF intensité < 85 (NOIR) :
-    Carbone / dépôts sombres
-    ├─ IF taille < 100 & circularity > 0.7 → Carbone_Amorphe_Fin
-    ├─ IF solidity > 0.85 & taille > 200 → Carbone_Cristallin_Dense
-    ├─ IF taille > 500 → Agglomérat_Carbone
-    └─ SINON → Carbone_Dispersé
+Intensité < 85     → Noir
+85 ≤ Intensité < 170 → Gris
+Intensité ≥ 170    → Blanc
 
-ELSE IF 85 ≤ intensité < 170 (GRIS) :
-    Transitions / mélanges
-    ├─ IF taille < 100 & circularity > 0.7 → Particule_Transition_Ronde
-    ├─ IF taille < 100 & circularity ≤ 0.7 → Particule_Transition_Anguleuse
-    ├─ IF solidity < 0.7 → Dépôt_Poreux
-    └─ SINON → Mélange_Intermédiaire
+Taille < 150  → Petit
+Taille ≥ 150  → Grand
 
-ELSE (intensité ≥ 170, BLANC) :
-    Substrat / artefacts
-    ├─ IF taille < 50 → Bruit_Optique
-    ├─ IF circularity < 0.5 & taille > 200 → Substrat_Exposé
-    └─ SINON → Particule_Claire
-```
-
-#### Processus de classification
-
-**Logique générale : Arbre de décision hiérarchique**
-
-Plutôt que de simplifier en une seule variable, on crée un **arbre de décisions imbriquées** (IF-ELSE) basé sur la hiérarchie physique :
-
-```
-ÉTAPE 1 : Décider la ZONE d'intensité (macro)
-├─ Zone SOMBRE (I < 85) : carbone/matériaux sombres
-├─ Zone GRIS (85 ≤ I < 170) : transitions/mélanges
-└─ Zone CLAIRE (I ≥ 170) : substrat/matériaux clairs
-
-ÉTAPE 2 : Dans chaque zone, décider la TAILLE (méso)
-├─ Petit (< 100 px²)
-├─ Moyen (100-400 px²)
-└─ Grand (> 400 px²)
-
-ÉTAPE 3 : Dans chaque (Zone, Taille), décider la FORME (micro)
-├─ Compact (circularity > 0.65 ET solidity > 0.75)
-├─ Poreux (solidity < 0.65)
-└─ Anguleux (autre)
-
-RÉSULTAT FINAL : Chaque particule reçoit un label
-(ex: "Carbone_Amorphe_Fin" ou "Dépôt_Poreux")
+Forme > 0.7   → Rond
+Forme ≤ 0.7   → Anguleux
 ```
 
-**Code conceptuel détaillé**
+**Label final**
+`Particle_Type_Combined = "{Intensite}_{Taille}_{Forme}"`
 
-Pour chaque particule i, récupérer ses 7 features et appliquer l'arbre :
+Exemples :
+- `Noir_Petit_Rond`
+- `Gris_Grand_Anguleux`
+- `Blanc_Petit_Rond`
 
-```
-Intensité = MeanIntensity_i
-Taille = Area_i
-Circularity = Circularity_i
-Solidity = Solidity_i
-AspectRatio = AspectRatio_i
-
-// Déterminer les classes de forme
-is_compact  = (Circularity > 0.65 AND Solidity > 0.75)
-is_porous   = (Solidity < 0.65)
-is_angular  = NOT is_compact AND NOT is_porous
-
-// ZONE SOMBRE
-IF Intensité < 85 :
-    IF Taille < 100 :
-        IF is_compact :
-            → "Carbone_Amorphe_Fin"
-        ELSE :
-            → "Carbone_Dispersé"
-    ELSE IF Taille < 400 :
-        IF Solidity > 0.85 :
-            → "Carbone_Cristallin_Dense"
-        ELSE :
-            → "Carbone_Dispersé"
-    ELSE :
-        → "Agglomérat_Carbone"
-
-// ZONE INTERMÉDIAIRE (GRIS)
-ELSE IF Intensité < 170 :
-    IF Taille < 100 :
-        IF is_compact :
-            → "Particule_Transition_Compacte"
-        ELSE IF is_angular :
-            → "Particule_Transition_Anguleuse"
-        ELSE :
-            → "Particule_Transition_Ronde"
-    ELSE IF Taille < 400 :
-        IF is_porous :
-            → "Dépôt_Poreux"
-        ELSE IF is_compact :
-            → "Particule_Transition_Compacte"
-        ELSE :
-            → "Particule_Transition_Anguleuse"
-    ELSE :
-        IF is_porous :
-            → "Dépôt_Poreux"
-        ELSE :
-            → "Mélange_Intermédiaire"
-
-// ZONE CLAIRE
-ELSE :
-    IF Taille < 50 :
-        → "Bruit_Optique"
-    ELSE IF Taille < 200 :
-        IF is_compact :
-            → "Particule_Claire_Compacte"
-        ELSE :
-            → "Particule_Claire"
-    ELSE :
-        IF Circularity < 0.5 OR Solidity < 0.7 :
-            → "Substrat_Exposé"
-        ELSE :
-            → "Particule_Claire_Compacte"
-```
-
-**Application pratique**
-
-```
-Pour CHAQUE ligne du tableau (particule) :
-  1. Extraire les 7 features
-  2. Appliquer le code arborescent ci-dessus
-  3. Ajouter le type retourné dans une colonne "Particle_Type"
-
-RÉSULTAT : Nouvelle colonne contenant le type physique
-de chaque particule
-```
-
-**Résultat final** : Un **DataFrame augmenté** avec une colonne supplémentaire `Particle_Type_Combined` contenant les ~10-12 types physiques observés
+**Résultat final** : Une colonne `Particle_Type_Combined` avec **12 types combinés**.
 
 ---
 
@@ -1023,9 +967,9 @@ Cluster 1 : 31 (16.7%) VS 17.5% global [Δ -0.8%]
 
 **Exemple**
 ```
-Cluster 0:  154 particules (20.7%)  [Type carbone fin]
-Cluster 1:  189 particules (25.4%)  [Type transition]
-Cluster 2:   82 particules (11.0%)  [Type poreux]
+Cluster 0:  154 particules (20.7%)
+Cluster 1:  189 particules (25.4%)
+Cluster 2:   82 particules (11.0%)
 ...
 Total:      744 particules
 ```
@@ -1034,18 +978,19 @@ Total:      744 particules
 - Si clusters équilibrés → bonne diversité composants
 - Si 1 cluster dominant → composition homogène ou biaisée
 
-### Types Physiques Dominants
+### Types Combinés Dominants
 
 ```
-Bruit_Optique                  : 254 (34.1%)
-Particule_Claire               : 104 (14.0%)
-Carbone_Amorphe_Fin            :  61 (8.2%)
+Noir_Petit_Rond             : 152 (20.4%)
+Noir_Grand_Anguleux         :  98 (13.2%)
+Gris_Petit_Anguleux         :  86 (11.6%)
+Blanc_Petit_Rond            :  63 (8.5%)
 ...
 ```
 
 **Interprétation**
-- Bruit dominant → vérifier qualité image ou seuils
-- Types rares → validera à la main
+- Si `Noir_*` domine → dépôts sombres majoritaires
+- Si `Blanc_*` domine → substrat/zone claire majoritaire
 
 ### Cohérence Clustering-Classification
 
@@ -1071,10 +1016,10 @@ Différence : 2
 | `cluster_combined_summary.csv` | Résumé statistique par cluster combiné (moyennes, écarts-types) |
 | `cluster_3d_summary.csv` | Résumé statistique par cluster 3D normalisé |
 | `cluster_detailed_analysis.csv` | Analyse détaillée des clusters combinés |
-| `particle_types_combined_distribution.csv` | Distribution des count par type physique |
-| `confusion_matrix_types.csv` | Crosstab : Type intensité vs Type physique |
+| `particle_types_combined_distribution.csv` | Distribution des count par type combiné |
+| `confusion_matrix_types.csv` | Crosstab : Type intensité vs Type combiné |
 | `crosstab_clusters_vs_intensity.csv` | Crosstab : Cluster vs Type intensité (noir/gris/blanc) |
-| `crosstab_clusters_vs_particle_types.csv` | Crosstab : Cluster vs Type physique |
+| `crosstab_clusters_vs_particle_types.csv` | Crosstab : Cluster vs Type combiné |
 | `pivot_taille_cluster_type.csv` | Tableau pivot : Taille moyenne par Cluster × Type |
 | `pivot_forme_cluster_type.csv` | Tableau pivot : Forme moyenne par Cluster × Type |
 | `pivot_intensite_cluster_type.csv` | Tableau pivot : Intensité moyenne par Cluster × Type |
@@ -1095,8 +1040,8 @@ Différence : 2
 | **Comment se distribuent les clusters ?** | `cluster_combined_summary.csv` | Rows = clusters, colonnes = métriques (count, mean_size, mean_intensity, etc.) |
 | **Y a-t-il corrélation taille/intensité ?** | `pivot_taille_cluster_type.csv` + `pivot_intensite_cluster_type.csv` | Comparer les valeurs : si cluster "grand" en taille aussi "sombre" en intensité → corrélation |
 | **Quels clusters dans la zone équilibrée ?** | `zone_equilibree_info.csv` | Colonne "Count_cluster" : tous les clusters doivent être présents |
-| **Détails de chaque particule ?** | `particles_by_intensity_types.csv` | Chaque row = 1 particule, toutes les 7 features + cluster ID + type physique |
-| **Confusion clustering vs classification ?** | `confusion_matrix_types.csv` | Rows = clusters, cols = types physiques. Diagonale = accord, hors-diagonale = divergence |
+| **Détails de chaque particule ?** | `particles_by_intensity_types.csv` | Chaque row = 1 particule, toutes les 7 features + cluster ID + type combiné |
+| **Confusion clustering vs classification ?** | `confusion_matrix_types.csv` | Rows = clusters, cols = types combinés. Diagonale = accord, hors-diagonale = divergence |
 | **Analyse spatiale (clusters par région) ?** | `crosstab_clusters_vs_intensity.csv` | Voir comment clusters se distribuent dans les 3 zones (noir/gris/blanc) |
 
 ### Exemple de lecture détaillée
@@ -1105,9 +1050,9 @@ Différence : 2
 
 ```
 Type,Count,Percentage
-Bruit_Optique,254,34.1%
-Particule_Claire,104,14.0%
-Carbone_Amorphe_Fin,61,8.2%
+Noir_Petit_Rond,152,20.4%
+Noir_Grand_Anguleux,98,13.2%
+Gris_Petit_Anguleux,86,11.6%
 ...
 ```
 
@@ -1127,7 +1072,7 @@ Carbone_Amorphe_Fin,61,8.2%
 
 ### Problèmes courants et solutions
 
-**❌ "k optimal = 2, mais j'observe 10 types physiques différents"**
+**❌ "k optimal = 2, mais j'observe 12 types combinés différents"**
 
 **Cause** : KMeans cherche la séparation mathématique, pas l'interprétation physique. Deux gros clusters peut contenir plusieurs types.
 
@@ -1135,7 +1080,7 @@ Carbone_Amorphe_Fin,61,8.2%
 - Augmenter `k_max` de 10 à 12-15 pour forcer plus de granularité
 - Vérifier les seuils (85, 170) : peut-être qu'ils divisent mal les zones
 - Consulter `confusion_matrix_types.csv` : voir quels types sont fusionnés
-- Les types physiques = classification rule-based sont **plus nombreux** que clusters mathématiques. C'est normal !
+- Les types combinés = classification (Intensity × Size × Shape) sont **plus nombreux** que clusters mathématiques. C'est normal !
 
 ---
 
@@ -1300,7 +1245,7 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 - Résultat : k clusters objectifs basés sur distances
 
 **Classification (étiquetage)**
-- Assigner **labels interprétables** (types physiques)
+- Assigner **labels interprétables** (types combinés)
 - Rule-based = utilise IF-ELSE sur features
 - Résultat : labels comme "Carbone_Amorphe_Fin"
 
@@ -1344,41 +1289,43 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 
 ---
 
-## 🔬 INTERPRÉTATION PHYSIQUE DES 12 TYPES OBSERVÉS
+## 🔬 INTERPRÉTATION PHYSIQUE DES TYPES COMBINÉS
 
 ### Tableau complet : signification et implications
 
-| Type | Intensité Raman | Taille typique | Forme | Signification physique | Composition probable | Origine dans réaction | Implications |
-|------|-----------------|-----------------|--------|-----|----------|---------|----------|
-| **Carbone_Amorphe_Fin** | Sombre (<85) | Petit (<100px) | Rond | Carbone désorganisé, catalyseur | Carbone pur amorphe (C-C sp³) | **Étape 1** : nucléation précoce | ✓ Début dépôt, qualité bonne |
-| **Carbone_Cristallin_Dense** | Très sombre (<85) | Grand (>200px) | Très compact | Carbone graphitisé, structuré | Carbone sp² semi-cristallin | **Étape 2** : croissance accélérée | ✓ Réaction bien engagée |
-| **Agglomérat_Carbone** | Très sombre (<85) | Très grand (>500px) | Varié | Plusieurs particules coalescées | Carbone mixte sp²/sp³ | **Étape 3** : coalescence, fin | ⚠️ Fin de réaction, agglomération |
-| **Particule_Transition_Compacte** | Intermédiaire (85-170) | Petit-modéré | Compact | Zone intermédiaire : mélange carbone-isolant | Carbone + oxyde léger | **Étape 2-3** : transition | ⚠️ Zone ambigüe, vérifier |
-| **Particule_Transition_Anguleuse** | Intermédiaire (85-170) | Petit-modéré | Anguleux | Défauts, structures irrégulières | Carbone défectueux | **Étape 2** : croissance irrégulière | ⚠️ Processus perturbé ? |
-| **Dépôt_Poreux** | Intermédiaire (85-170) | Modéré-grand | Poreux (solidity < 0.65) | Matériau aéré, incomplet | Carbone + vides | **Étape 2** : dépôt incomplet | ⚠️ Mauvaise coalescence |
-| **Mélange_Intermédiaire** | Intermédiaire (85-170) | Variable | Varié | Transition carbone/isolant | Mélange carbone-oxyde | **Étape 1-2** : processus mixte | ⚠️ Zone de transition |
-| **Particule_Claire_Compacte** | Clair (≥170) | Petit-modéré | Compact | Isolant pur, oxyde | Oxyde ou isolant | **Étape 1** : artefact ou couche native | ✓ Normal, contrôle positif |
-| **Particule_Claire** | Clair (≥170) | Variable | Variable | Substrat/oxyde préservé | Isolant pur | Toutes étapes | ✓ Normal, référence |
-| **Substrat_Exposé** | Très clair (≥170) | Grand | Très anguleux (circ <0.5) | Zones de substrat vierge | Matériau substrat pur | **Avant réaction** | ✓ Témoin négatif |
-| **Bruit_Optique** | Très clair (≥170) | Très petit (<50px) | N/A | Artefact instrumental | Aucun (faux signal) | Partout | ❌ À ignorer/minimiser |
-| **Cristallin_Fin** | Sombre-intermédiaire | Très petit | Compact | Cristallinité locale précoce | Carbone sp² début | **Étape 1-2** : nucléation cristalline | ✓ Bon signe croissance |
+Les types combinés sont construits par **Intensité × Taille × Forme** :
+
+- Intensité : Noir (I<85), Gris (85≤I<170), Blanc (I≥170)
+- Taille : Petit (<150), Grand (≥150)
+- Forme : Rond (shape>0.7), Anguleux (shape≤0.7)
+
+| Type combiné | Intensité Raman | Taille | Forme | Signification physique (générique) |
+|-------------|-----------------|--------|-------|------------------------------------|
+| **Noir_Petit_Rond** | Sombre | Petite | Ronde | Dépôt sombre fin, particules denses en nucléation |
+| **Noir_Petit_Anguleux** | Sombre | Petite | Anguleuse | Dépôt sombre fin, forme irrégulière |
+| **Noir_Grand_Rond** | Sombre | Grande | Ronde | Agglomérats sombres compacts |
+| **Noir_Grand_Anguleux** | Sombre | Grande | Anguleuse | Dépôt sombre massif, formes hétérogènes |
+| **Gris_Petit_Rond** | Intermédiaire | Petite | Ronde | Transition fine, mélange partiel |
+| **Gris_Petit_Anguleux** | Intermédiaire | Petite | Anguleuse | Transition fine, défauts/irrégularités |
+| **Gris_Grand_Rond** | Intermédiaire | Grande | Ronde | Mélange intermédiaire étendu |
+| **Gris_Grand_Anguleux** | Intermédiaire | Grande | Anguleuse | Zone transitionnelle épaisse, texture rugueuse |
+| **Blanc_Petit_Rond** | Clair | Petite | Ronde | Particules claires (substrat/oxyde fin) |
+| **Blanc_Petit_Anguleux** | Clair | Petite | Anguleuse | Petits artefacts clairs ou grains irréguliers |
+| **Blanc_Grand_Rond** | Clair | Grande | Ronde | Zones claires homogènes (substrat) |
+| **Blanc_Grand_Anguleux** | Clair | Grande | Anguleuse | Substrat exposé / zones claires irrégulières |
 
 ### Lecture des résultats type
 
-**Profil normal d'une réaction bien engagée** :
+**Profil équilibré attendu** :
 ```
-Bruit_Optique : 30-40% (acceptable)
-Carbone_Amorphe_Fin : 15-20% (bon)
-Carbone_Cristallin_Dense : 10-15% (excellent, croissance)
-Particule_Transition_* : 10-15% (normal, zones mixtes)
-Dépôt_Poreux : 5-10% (peut indiquer problème coalescence)
-Particule_Claire : 10-15% (normal, substrat préservé)
-Agglomérat_Carbone : 2-5% (signe fin de réaction)
+Noir_*   : dépôts sombres présents mais non dominants
+Gris_*   : transitions visibles (mélanges)
+Blanc_*  : substrat/zone claire encore détectable
 ```
 
-**Si Dépôt_Poreux > 30%** → problème aération, mauvaise coalescence → investiguer conditions électrochimiques
+**Si Noir_Grand_* domine** → dépôt dense/aggloméré, réaction avancée
 
-**Si Agglomérat > 20%** → réaction terminée, particules coagulent → peut arrêter expérience
+**Si Blanc_* domine** → substrat majoritaire, dépôt faible ou précoce
 
 ---
 
@@ -1488,13 +1435,15 @@ TABLEAU DONNÉES (rows=particules, cols=features)
 FEATURES NORMALISÉES PONDÉRÉES
     ↓
 [ÉTAPE 6] KMeans : test k∈[6,10], scoring (silhouette + inertie)
-    ↓
+   ↓
 CLUSTERING OPTIMAL (k=best_k, clusters assignés)
-    ↓
-[ÉTAPE 7] Classification rule-based (IF-ELSE sur intensité/taille/forme)
-    ↓
-TYPES PHYSIQUES ASSIGNÉS (~10-12 types)
-    ↓
+   ↓
+INTERPRÉTATION CLUSTERS (Cluster_Label + Cluster_Description)
+   ↓
+[ÉTAPE 7] Classification combinée (Intensity × Size × Shape)
+   ↓
+TYPES COMBINÉS ASSIGNÉS (12 types)
+   ↓
 [ÉTAPE 8] PCA 3D (6D → 3D), Zone équilibrée (balayage Wasserstein)
     ↓
 RÉSULTATS FINAUX :
@@ -1504,50 +1453,26 @@ RÉSULTATS FINAUX :
   • Diagnoses qualité
 ```
 
-### 2. Arbre décision pour Classification rule-based
+### 2. Arbre décision pour Classification combinée
 
 ```
-PARTICULE ENTRANTE (7 features calculées)
+PARTICULE ENTRANTE (features calculées)
 │
 ├─ Intensité Raman ?
-│  │
-│  ├─ < 85 (SOMBRE - CARBONE)
-│  │  │
-│  │  ├─ Taille < 100px ?
-│  │  │  ├─ OUI + Circularity > 0.65 ?
-│  │  │  │  └─ OUI → "Carbone_Amorphe_Fin" ✓
-│  │  │  └─ NON → "Carbone_Dispersé"
-│  │  │
-│  │  ├─ 100 < Taille < 400px ?
-│  │  │  ├─ Solidity > 0.85 ?
-│  │  │  │  └─ OUI → "Carbone_Cristallin_Dense" ✓
-│  │  │  └─ NON → "Carbone_Dispersé"
-│  │  │
-│  │  └─ Taille > 400px ?
-│  │     └─ "Agglomérat_Carbone" ✓
-│  │
-│  ├─ 85 ≤ Intensité < 170 (GRIS - TRANSITION/MÉLANGE)
-│  │  │
-│  │  ├─ Taille < 100px ?
-│  │  │  ├─ Circularity > 0.65 ? → "Transition_Compacte"
-│  │  │  └─ NON → "Transition_Anguleuse"
-│  │  │
-│  │  ├─ 100 < Taille < 400px ?
-│  │  │  ├─ Solidity < 0.65 ? → "Dépôt_Poreux" ✓
-│  │  │  └─ NON → "Transition_Compacte"
-│  │  │
-│  │  └─ Taille > 400px ? → "Mélange_Intermédiaire"
-│  │
-│  └─ ≥ 170 (CLAIR - SUBSTRAT/ARTEFACT)
-│     │
-│     ├─ Taille < 50px ? → "Bruit_Optique" ❌
-│     ├─ 50 < Taille < 200px ?
-│     │  └─ "Particule_Claire"
-│     └─ Taille > 200px ?
-│        ├─ Circularity < 0.5 ? → "Substrat_Exposé"
-│        └─ NON → "Particule_Claire"
+│  ├─ < 85        → Noir
+│  ├─ 85-169      → Gris
+│  └─ ≥ 170       → Blanc
+│
+├─ Taille ?
+│  ├─ < 150       → Petit
+│  └─ ≥ 150       → Grand
+│
+└─ Forme ?
+   ├─ shape > 0.7 → Rond
+   └─ shape ≤ 0.7 → Anguleux
 
-RÉSULTAT FINAL : Chaque particule reçoit 1 type physique unique
+LABEL FINAL : "Intensite_Taille_Forme"
+Ex: "Noir_Petit_Rond", "Gris_Grand_Anguleux"
 ```
 
 ### 3. Étapes critiques et points de décision
@@ -1585,12 +1510,12 @@ DÉCISION 5 : Zone équilibrée paramètres - MOYEN
 
 ### Auto-validation dans le pipeline
 
-**Cell 23 du notebook** : Validation cohérence clustering-classification
+**Cellule de validation (optionnelle)** : Cohérence clustering vs types combinés
 
 ```
 Checks automatiques :
-✓ Tous les clusters contiennent au moins 1 type physique
-✓ Tous les types touchent au moins 1 cluster
+✓ Tous les clusters contiennent au moins 1 type combiné
+✓ Tous les types combinés touchent au moins 1 cluster
 ✓ |k_optimal - types_observés| ≤ 2 (accepte quelques divergences)
 ✓ Rapport : k=?, types=?, différence=?
 
@@ -1631,7 +1556,7 @@ PROCESSUS :
 2. Comparer résultats :
    - k optimal stable ? (même k pour tout)
    - clusters ID identiques ? (peut être réindexés, OK)
-   - types physiques identiques ? (même distribution)
+   - types combinés identiques ? (même distribution)
    
 RÉSULTAT ATTENDU :
 - Tous les 5 runs → k identique
@@ -1806,25 +1731,20 @@ Cluster 3:  38 particules (5.1%)
 ```
 **Interprétation** : Si clusters bien équilibrés (5-10% chacun) → couverture chimique complète
 
-#### 2. Types physiques dominants
+#### 2. Types combinés dominants
 ```
 Distribution types (12 observés) :
-Bruit_Optique             : 254 particules (34.1%)
-Particule_Claire          : 104 particules (14.0%)
-Carbone_Amorphe_Fin       :  61 particules (8.2%)
-Cristallin_Dense          :  42 particules (5.6%)
-Agglomérat_Carbone        :  38 particules (5.1%)
-Transition_Ronde          :  35 particules (4.7%)
-Transition_Anguleuse      :  30 particules (4.0%)
-Dépôt_Poreux              :  28 particules (3.8%)
-Mélange_Intermédiaire     :  24 particules (3.2%)
-Particule_Dispersée       :  20 particules (2.7%)
-Substrat_Exposé           :  18 particules (2.4%)
-Cristallin_Fin            :  12 particules (1.6%)
+Noir_Petit_Rond         : 152 particules (20.4%)
+Noir_Grand_Anguleux     :  98 particules (13.2%)
+Gris_Petit_Anguleux     :  86 particules (11.6%)
+Gris_Grand_Rond         :  74 particules (9.9%)
+Blanc_Petit_Rond        :  63 particules (8.5%)
+Blanc_Grand_Anguleux    :  51 particules (6.9%)
+...
 ```
-**Interprétation** : 
-- Bruit optique élevé → image de modérée qualité (normal pour Raman)
-- Particule_Claire + Carbone_Amorphe_Fin → 42% → composition dominante
+**Interprétation** :
+- Dominance des classes `Noir_*` → dépôts sombres présents
+- Présence équilibrée de `Gris_*` → zones de transition visibles
 
 #### 3. Zone équilibrée identifiée
 ```
@@ -1859,7 +1779,7 @@ k=10 : Silhouette=0.427 | Inertie normalisée=1.00 | Score combiné=0.50
 - **Silhouette augmente légèrement** de 0.395 (k=6) à 0.427 (k=10) : clusters deviennent progressivement mieux séparés
 - **Inertie normalisée augmente** : à k=9, elle atteint le maximum (1.00), puis plafonne
 - **Score combiné culmine** à k=9-10 : légère amélioration après c'est marginal
-- **Recommandation** : Si 12 types physiques observés, choisir **k=10** pour correspondance approximative types-clusters
+- **Recommandation** : Si 12 types combinés observés, choisir **k=10** pour correspondance approximative types-clusters
 
 ---
 
@@ -1897,7 +1817,7 @@ k=10 : Silhouette=0.427 | Inertie normalisée=1.00 | Score combiné=0.50
 
 **Recommandations**
 - Ajuster seuils (85, 170) si histogramme d'intensité change radicalement
-- Valider types physiques manuellement sur sous-ensemble d'images
+- Valider types combinés manuellement sur sous-ensemble d'images
 - Conserver images brutes pour audit et reproductibilité
 - Revalider plage k si contexte physico-chimique évolue
 
@@ -1928,7 +1848,7 @@ k=10 : Silhouette=0.427 | Inertie normalisée=1.00 | Score combiné=0.50
 
 3. **Intégration chimie quantitative**
    - Corréler clusters Raman avec XRD/FTIR/SEM
-   - Valider types physiques avec microscopie électronique
+   - Valider types combinés avec microscopie électronique
    - Établir courbes d'étalonnage
 
 4. **Dynamique cristallisation**
