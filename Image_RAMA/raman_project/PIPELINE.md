@@ -67,6 +67,8 @@ Analyser une image Raman pour **détecter automatiquement** les particules, les 
 
 ### Pourquoi 3 zones d'intensité (noir, gris, blanc) ?
 
+**Note** : Ces seuils sont utilisés pour la **classification combinée** (types), pas pour la segmentation.
+
 **Décision** : Segmenter en 3 classes : intensité < 85, 85-170, ≥ 170
 
 **Justifications** :
@@ -100,24 +102,24 @@ Analyser une image Raman pour **détecter automatiquement** les particules, les 
 └────────────┬─────────────────────────────┘
              ↓
 ┌────────────────────────────────────────────┐
-│ 2. SEGMENTATION PAR INTENSITÉ (3 ZONES)    │
-│    • Seuillage : I<85, 85≤I<170, I≥170    │
-│    • Masques binaires                      │
+│ 2. SEGMENTATION ADAPTATIVE + WATERSHED     │
+│    • Adaptive threshold + hole filling     │
+│    • Filtre taille (calibration µm)        │
+│    • Watershed (séparation particules)     │
 └────────────┬─────────────────────────────┘
              ↓
 ┌────────────────────────────────────────────┐
 │ 3. DÉTECTION PARTICULES                    │
-│    • Morphologie math (ouverture)          │
-│    • Contours + extraction features        │
+│    • Contours sur masque séparé            │
+│    • Features physiques + intensité réelle │
 │    • DataFrame ~200-1000 particules        │
 └────────────┬─────────────────────────────┘
              ↓
 ┌────────────────────────────────────────────┐
 │ 4. CLUSTERING MULTI-PARAMÈTRES             │
-│    • Normalization + pondération           │
-│    • KMeans, auto-détection k (6-10)       │
+│    • StandardScaler sur 4 features         │
+│    • KMeans, k dynamique (silhouette)      │
 │    • Interprétation clusters (labels/desc) │
-│    • Score : silhouette (70%) + inertie(30%)
 └────────────┬─────────────────────────────┘
              ↓
 ┌────────────────────────────────────────────┐
@@ -128,7 +130,7 @@ Analyser une image Raman pour **détecter automatiquement** les particules, les 
              ↓
 ┌────────────────────────────────────────────┐
 │ 6. PCA 3D (Visualisation)                  │
-│    • 6D → 3D (variance expliquée ~75%)     │
+│    • Features dispo → 3D (variance ~75%)   │
 └────────────┬─────────────────────────────┘
              ↓
 ┌────────────────────────────────────────────┐
@@ -241,105 +243,45 @@ La **logique derrière CLAHE** : L'égalisation d'histogramme globale (tradition
 
 ---
 
-### **ÉTAPE 2 : Segmentation par Intensité (3 Zones)**
+### **ÉTAPE 2 : Prétraitement et Segmentation (adaptive threshold + Watershed)**
 
 #### Concept
 
-**Objectif** : Diviser l'image en 3 **masques binaires** selon l'intensité
-
-**Seuils choisis**
-- **Noir** : $I < 85$ (zone sombre = carbone/dépôts denses)
-- **Gris** : $85 \leq I < 170$ (zone intermédiaire)
-- **Blanc** : $I \geq 170$ (zone claire = substrat/artefacts)
-
-#### Justification des seuils
-
-**Méthode empirique**
-
-L'approche utilisée pour déterminer les seuils (85, 170) est la suivante :
-
-1. **Calcul de l'histogramme** : Compter le nombre de pixels à chaque niveau d'intensité (0-255)
-2. **Identification des pics (modes)** : Trouver les maxima locaux dans l'histogramme
-   - Exemple observé : pics à I≈50 (zone sombre), I≈130 (zone intermédiaire), I≈200 (zone claire)
-3. **Choix des seuils entre les pics** : Placer les seuils dans les vallées (minima) entre les pics
-   - Seuil 1 : 85 (entre pic sombre et pic intermédiaire)
-   - Seuil 2 : 170 (entre pic intermédiaire et pic clair)
-4. **Validation visuelle** : Afficher les masques résultants et vérifier qu'ils font sens physiquement
-
-**Raison physique**
-
-- **Intensité Raman ≠ couleur visuelle**. Elle reflète la **structure cristalline** et la **composition chimique** du matériau
-- **Bas I** (sombre) = éléments **conducteurs, amorphes, denses** (ex: carbone pur, dépôts métalliques)
-- **Haut I** (clair) = éléments **isolants, cristallins, transparents** (ex: substrat, oxyde)
-- **Intermédiaire I** (gris) = **zones de transition, mélanges, défauts**
-
-Ces seuils **ne sont pas arbitraires** mais fondés sur l'observation que les images Raman présentent naturellement une distribution **trimodale** (3 pics distinctes)
+**Objectif** : produire un **masque binaire propre** puis **séparer** les particules collées sans dépendre d'un seuillage en 3 zones.
 
 #### Processus de segmentation
 
-**Logique des masques binaires**
+**1) Filtrage léger**
+- Flou gaussien $3\times3$ pour réduire le bruit haute fréquence.
 
-Pour chaque seuil, on crée un **masque binaire** (image avec seulement 0 et 255) qui isolela région d'intérêt :
+**2) Seuillage adaptatif (détection sensible)**
+- `cv2.adaptiveThreshold` (Gaussian) avec `blockSize=15`, `C=2`.
+- Produit un masque initial binaire où les particules sont détectées localement.
 
-- **Mask_Noir** : Pixels où intensité < 85 → cette région sera traitée comme zone sombre
-- **Mask_Gris** : Pixels où 85 ≤ intensité < 170 → cette région sera traitée comme zone intermédiaire  
-- **Mask_Blanc** : Pixels où intensité ≥ 170 → cette région sera traitée comme zone claire
+**3) Nettoyage morphologique court**
+- Ouverture morphologique avec kernel $3\times3$ (1 itération) pour enlever le bruit très fin.
 
-Chaque masque est indépendant. Un pixel n'appartient qu'à **une seule** zone (les seuils sont disjoints).
+**4) Remplissage des trous (hole filling)**
+- Détection des contours du masque, puis remplissage complet.
+- Objectif : transformer les structures creuses (donuts) en particules pleines.
 
-**Nettoyage morphologique optionnel**
+**5) Filtre de taille basé sur la calibration**
+- Suppression des objets plus petits que `MIN_AREA_PX` (déduit de `MIN_DIAMETER_UM` et de la barre d'échelle).
+- Utilisation de `remove_small_objects` pour un filtrage physique (et non arbitraire).
 
-Après création des masques, on peut appliquer une **ouverture morphologique** pour nettoyer les petits artefacts :
-- L'érosion contracte les petits bruits
-- La dilatation agrandit à nouveau les objets valides
-- Résultat : zones nettoyées sans perte des particules principales
+**6) Séparation des particules par Watershed**
+- Distance transform sur le masque nettoyé.
+- Seuil du premier plan : $0.1 \times \max(\text{distance})$.
+- Arrière-plan sûr par dilatation (kernel $3\times3$, 3 itérations).
+- Watershed → masque final `clean_separated`.
 
-**Résultat final** : Trois masques indépendants, chacun binaire (0 ou 255), prêts pour la détection de contours dans chaque région
+**Résultat final** : un masque binaire **séparé** (une particule = un objet), prêt pour l'extraction des contours.
 
 ---
 
 ### **ÉTAPE 3 : Détection des Particules**
 
-#### 3.1 - Nettoyage morphologique (Ouverture)
-
-**Problème** : Le bruit optique crée de petits éléments non pertinents
-
-**Solution** : Morphologie mathématique = opérations géométriques simples
-
-**Opération : Ouverture = Érosion + Dilatation**
-
-```
-Image binaire brute
-    ↓
-Érosion : "shrink" les objets
-    • Pixel = 1 si tous voisins = 1
-    • Élimine bruit ponctuel et petites particules
-    ↓
-Dilatation : "expand" les objets
-    • Pixel = 1 si un voisin = 1
-    • Restaure la taille originale
-    ↓
-Résultat : Particules lisses sans bruit
-```
-
-**Détail des paramètres utilisés**
-
-- **MORPH_ELLIPSE** : type d'élément structurant
-  - Logique : Un kernel **circulaire** (ellipse) est plus naturel pour les particules qui ont généralement une forme arrondie
-  - Alternative : MORPH_RECT (rectangle), mais moins adapté aux particules
-
-- **(5,5)** : taille du kernel
-  - Logique : Petit kernel (5×5 = 25 pixels) pour ne pas éliminer les **fines particules**
-  - Plus grand kernel (7×7 ou 9×9) lisse davantage mais perd détails fins
-  - Équilibre trouvé : 5×5 suffit pour éliminer bruit optique tout en gardant particules réelles
-
-- **iterations=1** : nombre de passes
-  - Logique : Une seule itération d'ouverture suffit pour nettoyer le bruit sans déformer les particules
-  - Itérations supplémentaires = effets plus forts, risque d'éliminer petites particules valides
-
----
-
-#### 3.2 - Détection des contours
+#### 3.1 - Détection des contours sur masque séparé
 
 **Objectif et logique**
 
@@ -357,11 +299,11 @@ Les masques binaires ne sont que des régions. Pour **détecter les particules**
 
 ---
 
-#### 3.3 - Extraction des caractéristiques (Features)
+#### 3.2 - Extraction des caractéristiques (Features)
 
 **Concept fondamental**
 
-Pour chaque **contour détecté** (représentant une particule), on calcule **7 caractéristiques numériques** qui décrivent sa morphologie (forme, taille) et son intensité Raman. Ces caractéristiques seront plus tard utilisées pour le clustering et la classification.
+Pour chaque **contour détecté** (représentant une particule), on calcule **8 caractéristiques directes** (forme, taille, intensité, position) et **2 dérivées** (aires en µm² et log). Ces caractéristiques seront plus tard utilisées pour le clustering et la classification.
 
 | Feature | Formule / Méthode | Signification physique |
 |---------|-----------------|------------------------|
@@ -372,30 +314,29 @@ Pour chaque **contour détecté** (représentant une particule), on calcule **7 
 | **Solidity** | $\frac{\text{Area}}{\text{Area de l'enveloppe convexe}}$ | Mesure la **densité/compacité**. Valeur 1 = parfaitement convexe, <0.8 = poreux/avec cavités/dentelé. **Logique** : l'enveloppe convexe est le plus petit polygone contenant l'objet |
 | **MeanIntensity** | Moyenne des pixels Raman à l'intérieur du contour | **Intensité Raman moyenne** de la particule. Proxy direct de la **composition chimique** (bas = carbone/matériaux sombres, haut = substrat/matériaux clairs) |
 | **Center (X, Y)** | Centroïde = position moyenne (x, y) du contour | Localisation **spatiale** de la particule. Utilisée pour la zone équilibrée, la visualisation, et les analyses spatiales |
+| **Area_um2** | $\text{Area}_{px^2} \times \text{PX\_AREA\_TO\_UM2}$ | Taille physique en µm² |
+| **Log_Area_um2** | $\log(1 + \text{Area}_{\mu m^2})$ | Taille compressée pour analyses multi-échelles |
 
 **Processus détaillé d'extraction**
 
 ```
 Pour CHAQUE contour détecté :
-1. Calculer l'aire : compter tous les pixels internes
-2. Si aire < seuil (ex: 20 pixels²) : ignorer (bruit optique)
-3. Calculer le périmètre : somme des distances entre points du contour
-4. Circularity : formule ci-dessus
-5. Fit une ellipse au contour → extraire demi-axes majeur/mineur
-   - Raison : caractériser l'allongement de manière robuste
-6. AspectRatio : ratio axes
-7. Hull : enveloppe convexe (plus petit polygone contenant le contour)
-   - Raison : comparer aire réelle vs aire convexe révèle les creux/porosités
-8. Solidity : area / hull_area
-9. Créer un masque binaire isolant juste cette particule
-10. Appliquer le masque sur l'image Raman originale
-11. MeanIntensity : moyenne des intensités dans ce masque
-12. Centroïde : calculer le centre de masse de la particule
+1. Calculer l'aire (px²)
+2. Si aire < seuil (min_area ≈ 10 px²) : ignorer (bruit résiduel)
+3. Calculer le périmètre
+4. Circularity = 4π × Area / Perimeter²
+5. AspectRatio = w / h via boundingRect (robuste et rapide)
+6. Hull convex + Solidity = Area / HullArea
+7. Conversion physique : Area_um2 = Area_px2 × PX_AREA_TO_UM2
+8. Log_Area_um2 = log1p(Area_um2)
+9. Masque de la particule → MeanIntensity sur l'image GRAY originale (pas CLAHE)
+10. Centroïde (moments) → Center_X, Center_Y
 
 Ajouter tous ces paramètres dans une ligne du tableau (DataFrame)
 ```
 
-**Résultat final** : Un **DataFrame pandas** avec ~200-1000 **lignes** (une par particule) et 8 **colonnes** (7 features + ID particule)
+**Résultat final** : Un **DataFrame pandas** avec ~200-1000 **lignes** (une par particule) et les colonnes :
+`Area_px2`, `Area_um2`, `Log_Area_um2`, `Perimeter_px`, `Circularity`, `AspectRatio`, `Solidity`, `MeanIntensity`, `Center_X`, `Center_Y`.
 
 ---
 
@@ -403,23 +344,16 @@ Ajouter tous ces paramètres dans une ligne du tableau (DataFrame)
 
 #### 4.1 - Sélection des features
 
-**Décision** : Utiliser 3 dimensions conceptuelles
+**Décision** : Utiliser 4 features **directes** (pas de score de forme composite).
 
-| Dimension | Features | Formule | Raison |
-|-----------|----------|---------|--------|
-| **Taille** | Area | $\text{Size}_{\text{Score}} = \text{Area}$ | Proxy croissance |
-| **Forme** | Circularity, Solidity, AspectRatio | $\text{Shape} = 0.4×\text{Circ} + 0.4×\text{Solid} + 0.2/(1+AR)$ | Combine compacité |
-| **Intensité** | MeanIntensity | $\text{Intensity} = I$ | Proxy composition |
+| Feature | Raison |
+|---------|--------|
+| **MeanIntensity** | Proxy composition (Raman) |
+| **Log_Area_um2** | Taille physique (échelle log) |
+| **Circularity** | Forme (sphéricité) |
+| **Solidity** | Compacité |
 
-**Justification de Shape**
-```
-Shape = 0.4×Circularity + 0.4×Solidity + 0.2/(1+AspectRatio)
-
-Poids :
-- Circularity (0.4) : "le contour est-il rond ?"
-- Solidity (0.4)    : "la particule est-elle dense ?"
-- 1/(1+AR) (0.2)    : "est-elle isotrope ?" (normaliser AR pour [0,1])
-```
+**Note** : `AspectRatio` est volontairement **retiré** (souvent redondant avec taille/forme).
 
 #### 4.2 - Normalisation StandardScaler
 
@@ -460,46 +394,28 @@ APRÈS normalisation Z-score :
            → contributions équivalentes
 ```
 
-**Effet** : Les 3 dimensions (Taille, Forme, Intensité) contribuent à **égalité** aux calculs de distance, ce qui permet au clustering de détecter les vraies différences physiques
+**Effet** : Les 4 features contribuent à **égalité** aux calculs de distance, ce qui permet au clustering de détecter les vraies différences physiques
 
-#### 4.3 - Pondération manuelle
+#### 4.3 - Sélection automatique de k (Silhouette)
 
-**Concept**
+**Principe** : tester k sur une plage **dynamique** dépendante du nombre de particules.
 
-Après normalisation (où toutes les features ont σ=1), on applique des **poids différents** pour refléter l'**importance physique** relative de chaque caractéristique.
+$$k \in [2, \min(10, \max(3, \lfloor N/10 \rfloor))]$$
 
-**Décision et justification**
+Pour chaque k, on calcule le **silhouette score** sur les features normalisées.
 
-$$\text{Distance pondérée} = \sqrt{w_1 \times (\Delta \text{Size})^2 + w_2 \times (\Delta \text{Circ})^2 + ... + w_5 \times (\Delta \text{Intensity})^2}$$
-
-Poids choisis : $[1.3, 1.0, 0.9, 1.0, 1.4]$ pour $[\text{Size, Circ, AR, Solid, Intensity}]$
-
-**Raison de chaque poids**
-
-| Feature | Poids | Justification |
-|---------|-------|--------------|
-| **Size** | 1.3 | ↑ Augmenté (importance **très forte**). La taille est un critère physique fondamental : elle révèle la **maturité** et la **croissance** de la particule |
-| **Circularity** | 1.0 | Normal. Indicateur de **régularité** mais moins critique |
-| **AspectRatio** | 0.9 | ↓ Réduit légèrement. Moins discriminant que les autres (souvent corrélé à la taille) |
-| **Solidity** | 1.0 | Normal. Indicateur de **porosité** (important pour la texture) |
-| **Intensity** | 1.4 | ↑↑ Augmenté (importance **maximale**). L'intensité Raman est **directement liée à la composition chimique**, ce qui est le critère le plus important pour distinguer les matériaux |
-
-**Effet sur le clustering**
+**Processus complet d'auto-sélection**
 
 ```
-Sans pondération :
-  - KMeans verrait des clusters basés sur des variations mineures
-  - Toutes les features pèseraient pareil
-  - Risque d'sur-fragmentation
+Pour chaque k dans la plage dynamique :
+   1. Lancer KMeans avec n_clusters=k
+   2. Calculer silhouette_score(data, labels)
+   3. Récupérer inertie du modèle (info)
+   4. Enregistrer silhouette + inertie
 
-Avec pondération [1.3, 1.0, 0.9, 1.0, 1.4] :
-  - Size × 1.3 : favorise la séparation par taille
-  - Intensity × 1.4 : priorité à la composition
-  - AR × 0.9 : déemphasise les variations mineures
-  - Résultat : clusters correspondent à des **groupes physiques réels**
+Chercher k avec **silhouette maximal**
+→ best_k = argmax(silhouette)
 ```
-
-**Logique générale** : La pondération permet au modèle mathématique (KMeans) d'**apprendre** les priorités physiques de l'expert
 
 #### 4.4 - KMeans clustering
 
@@ -513,7 +429,7 @@ KMeans est un algorithme **itératif** qui fonctionne comme suit :
 
 2. ITÉRATION (répéter jusqu'à convergence) :
    a) ASSIGNATION : Pour chaque point de donnée (particule),
-      calcule la distance euclidienne pondérée à chaque centroïde
+      calcule la distance euclidienne à chaque centroïde
       → Assigne le point au centroïde le plus proche
    
    b) MISE À JOUR : Recalculer chaque centroïde comme la moyenne 
@@ -530,10 +446,10 @@ KMeans est un algorithme **itératif** qui fonctionne comme suit :
 
 | Paramètre | Valeur | Raison |
 |-----------|--------|--------|
-| `n_clusters` | Variable (6-10) | Déterminé automatiquement après |
+| `n_clusters` | Variable (k dynamique) | Déterminé automatiquement par silhouette |
 | `random_state` | 42 | **Reproductibilité** : même initialisation aléatoire à chaque exécution |
-| `n_init` | 10 | Relancer 10 fois avec initialisation différente, garder le meilleur résultat → évite les minima locaux |
-| `max_iter` | 300 | Maximum d'itérations avant arrêt forcé (généralement converge bien avant) |
+| `n_init` | 50 (score) / 100 (final) | Améliore la stabilité de l'optimum |
+| `max_iter` | 500 (score) / 1000 (final) | Convergence robuste |
 
 **Pourquoi KMeans pour cette analyse ?**
 
@@ -545,119 +461,13 @@ KMeans est un algorithme **itératif** qui fonctionne comme suit :
 | **Scalabilité** | ✅ Travaille sur 1000+ points | Hierarchical = mémoire O(n²) |
 | **Clusters sphériques** | ✅ Assume clusters équi-taille et spérique | DBSCAN = clusters arbitraires |
 
-**Résultat** : Chaque particule reçoit un **cluster ID** (0 à k-1) basé sur sa proximité au centroïde
+**Résultat** : Chaque particule reçoit un **cluster ID** (0 à k-1) basé sur sa proximité au centroïde.
+
+**Note** : Le **k final** est celui qui maximise le silhouette score.
 
 ---
 
-#### 4.5 - Sélection automatique du nombre de clusters (k)
-
-**Problème fondamental**
-
-KMeans **nécessite** de spécifier `k` (nombre de clusters) d'avance. Mais comment choisir ? 
-- k=2 ? k=5 ? k=10 ? k=100 ?
-- Trop bas : groupes distincts fusionnés
-- Trop haut : sur-fragmentation artificielle
-
-**Solution : Tester une plage et scorer chacun**
-
-On teste k ∈ [6, 10] (plage physiquement réaliste pour cet application) et on score chaque k selon **deux métriques**
-
-**Métrique 1 : Silhouette Score**
-
-**Concept** : Mesure si chaque point est plus proche de son propre cluster que des autres clusters.
-
-Pour chaque point i :
-- $a(i)$ = distance **moyenne** à tous les autres points de son **propre cluster**
-- $b(i)$ = distance **minimale moyenne** à tous les points du cluster le plus proche
-
-$$s(i) = \frac{b(i) - a(i)}{\max(a(i), b(i))}$$
-
-**Silhouette global** = moyenne de tous les s(i)
-
-**Interprétation**
-- s ≈ 1 : Point bien clustérisé (proche de son cluster, loin des autres)
-- s ≈ 0 : Point ambigu (entre deux clusters)
-- s < 0 : Point mal assigné (plus proche d'un autre cluster que le sien)
-
-**Valeur globale typique** : [0.3, 0.7]
-- > 0.5 : très bon
-- 0.3-0.5 : acceptable
-- < 0.3 : faible
-
-**Logique derrière** : C'est une mesure de **séparation** (cohésion intra-cluster + distinction inter-cluster)
-
-**Métrique 2 : Inertie normalisée**
-
-**Définition** : Inertie = somme des distances **au carré** de chaque point à son centroïde assigné
-
-$$I = \sum_{i=1}^{n} ||x_i - C_i||^2$$
-où $C_i$ est le centroïde assigné au point i
-
-**Problématique** : L'inertie **décroît toujours** avec k (augmenter k réduit les distances) 
-- k=1 : inertie maximale (tous dans 1 cluster)
-- k=n : inertie minimale = 0 (chaque point = son propre cluster)
-
-**Solution** : Normaliser par la valeur maximale
-$$I_n = \frac{I_k}{I_{max}}$$
-
-où $I_{max}$ = inertie pour k=1 (tous dans 1 cluster)
-
-**Résultat** : $I_n \in [0, 1]$
-
-**Interprétation**
-- Proche de 0 : clusters très compacts (k élevé)
-- Proche de 1 : clusters très dispersés (k bas)
-
-**Logique derrière** : C'est une mesure de **compacité** (on préfère les clusters resserrés, mais pas trop (overdivisé))
-
-#### 4.6 - Score combiné
-
-**Décision : Fusionner les 2 métriques**
-
-$$\text{Score}_{final}(k) = 0.7 \times \text{Silhouette}(k) + 0.3 \times (1 - I_n(k))$$
-
-**Justification des poids**
-
-| Poids | Métrique | Raison |
-|-------|----------|--------|
-| **70%** | Silhouette | **Priorité à la séparation**. On veut des clusters clairs et distincts pour qu'on puisse les interpréter physiquement |
-| **30%** | (1 - Inertie normalisée) | **Secondaire : compacité**. On ne veut pas de clusters trop dispersés, mais c'est moins critique |
-
-**Logique globale**
-
-```
-Si k=6 : clusters bien séparés (silhouette=0.55) mais pas super compacts
-        Score = 0.7×0.55 + 0.3×(1-0.80) = 0.385 + 0.06 = 0.445
-
-Si k=9 : clusters moyennement séparés (silhouette=0.43) et bien compacts
-        Score = 0.7×0.43 + 0.3×(1-1.00) = 0.301 + 0.00 = 0.301
-
-Si k=8 : bon équilibre (silhouette=0.52 et compacité=0.95)
-        Score = 0.7×0.52 + 0.3×(1-0.95) = 0.364 + 0.015 = 0.379
-
-Le score 0.445 pour k=6 est meilleur !
-```
-
-**Processus complet d'auto-sélection**
-
-```
-Pour chaque k dans [6, 7, 8, 9, 10] :
-  1. Lancer KMeans avec n_clusters=k
-  2. Calculer silhouette_score(data, labels)
-  3. Récupérer inertie du modèle
-  4. Normaliser inertie par I_max
-  5. Calculer score combiné = 0.7×sil + 0.3×(1-inertia_norm)
-  6. Enregistrer score
-
-Chercher k avec score maximal
-→ best_k = argmax(scores)
-```
-
-**Résultat** : Un **k automatiquement sélectionné** basé sur l'équilibre entre séparation et compacité
-
----
-
-#### 4.7 - Interprétation physique des clusters (Cluster_Label / Cluster_Description)
+#### 4.5 - Interprétation physique des clusters (Cluster_Label / Cluster_Description)
 
 **Objectif** : Donner une **interprétation physique lisible** à chaque cluster KMeans.
 
@@ -747,10 +557,10 @@ Exemples :
 
 #### Concept
 
-**Problème** : 6 features, difficile à visualiser/comprendre
+**Problème** : Jusqu'à 6 features, difficile à visualiser/comprendre
 
 **Solution** : Réduction dimensionnelle via PCA
-- Projeter 6D → 3D
+- Projeter jusqu'à 6D → 3D
 - Conserver la variance maximale
 - Permet visualisation interactive
 
@@ -765,7 +575,7 @@ PCA (Principal Component Analysis) est une technique de **réduction dimensionne
 
 **Logique mathématique**
 
-Imaginons 6 features comme 6 dimensions d'un espace. Si on visualise en 6D, c'est impossible. 
+Imaginons jusqu'à 6 features comme des dimensions d'un espace. Si on visualise en 6D, c'est impossible. 
 
 PCA demande : "Quels sont les 3 **directions les plus importantes** (celles qui capturent le plus de variation)?"
 
@@ -787,7 +597,7 @@ Pourtant si on projette sur (PC1, PC2), on perd peu d'info (5% seulement)
 **Processus complet**
 
 ```
-INPUT : 6 features normalisées pour toutes les particules
+INPUT : features disponibles normalisées (parmi Area_px2, Perimeter_px, Circularity, AspectRatio, Solidity, MeanIntensity)
 
 ÉTAPE 1 : Normalisation (déjà fait avec StandardScaler)
          Chaque feature : μ=0, σ=1
@@ -813,7 +623,7 @@ OUTPUT : Tableau avec colonnes PC1, PC2, PC3 pour chaque particule
 
 Chaque composante principale est une **combinaison linéaire** des features originales :
 
-$$PC_1 = a_1 \times \text{Size} + a_2 \times \text{Circularity} + ... + a_6 \times \text{Perimeter}$$
+$$PC_1 = a_1 \times \text{Area} + a_2 \times \text{Circularity} + ... + a_6 \times \text{MeanIntensity}$$
 
 Les coefficients (a₁, a₂, ..., a₆) indiquent la **contribution** de chaque feature original à PC1.
 
@@ -847,7 +657,7 @@ Cela signifie qu'en oubliant les 3 dernières dimensions, on perd **seulement 24
 
 **Avantages de PCA pour cette analyse**
 
-- ✅ **Visualisation** : Passer de 6D incompréhensible à 3D visualisable
+- ✅ **Visualisation** : Passer d'un espace jusqu'à 6D incompréhensible à 3D visualisable
 - ✅ **Validation** : Voir si les clusters KMeans semblent bien séparés en 3D
 - ✅ **Diagnostic** : Si variance expliquée < 50%, il y a peut-être des structures cachées
 - ✅ **Compression** : Réduire données pour analyses futures
@@ -961,6 +771,28 @@ Cluster 1 : 31 (16.7%) VS 17.5% global [Δ -0.8%]
 
 ---
 
+## 📐 MÉTRIQUES ET FORMULES
+
+### Formules principales
+
+| Métrique | Formule | Usage |
+|----------|---------|-------|
+| **Niveaux de gris** | $0.299R + 0.587G + 0.114B$ | Conversion RGB → intensité Raman |
+| **Circularity** | $4\pi \times \frac{\text{Area}}{\text{Perimeter}^2}$ | Rond / allongé |
+| **Solidity** | $\frac{\text{Area}}{\text{ConvexHull Area}}$ | Compacité |
+| **AspectRatio** | $\frac{\text{axe majeur}}{\text{axe mineur}}$ | Allongement |
+| **Area_um2** | $\text{Area}_{px^2} \times \text{PX\_AREA\_TO\_UM2}$ | Taille physique |
+| **Log_Area_um2** | $\log(1 + \text{Area}_{\mu m^2})$ | Compression d'échelle |
+| **Z-score** | $x_{norm} = \frac{x - \mu}{\sigma}$ | Normalisation StandardScaler |
+
+### Métriques de qualité et de clustering
+
+- **Contraste** : $\sigma(\text{pixels})$ (écart-type des intensités).
+- **SNR** : $\mu / \sigma$ (moyenne sur écart-type).
+- **Silhouette** : score $\in [-1, 1]$ (cohésion intra-cluster vs séparation inter-cluster).
+
+---
+
 ## 📊 RÉSULTATS ET INTERPRÉTATION
 
 ### Distribution des Clusters
@@ -1030,7 +862,7 @@ Différence : 2
 
 ---
 
-## � GUIDE D'INTERPRÉTATION DES FICHIERS CSV
+## 📁 GUIDE D'INTERPRÉTATION DES FICHIERS CSV
 
 ### Quel fichier consulter pour quelle question ?
 
@@ -1040,7 +872,7 @@ Différence : 2
 | **Comment se distribuent les clusters ?** | `cluster_combined_summary.csv` | Rows = clusters, colonnes = métriques (count, mean_size, mean_intensity, etc.) |
 | **Y a-t-il corrélation taille/intensité ?** | `pivot_taille_cluster_type.csv` + `pivot_intensite_cluster_type.csv` | Comparer les valeurs : si cluster "grand" en taille aussi "sombre" en intensité → corrélation |
 | **Quels clusters dans la zone équilibrée ?** | `zone_equilibree_info.csv` | Colonne "Count_cluster" : tous les clusters doivent être présents |
-| **Détails de chaque particule ?** | `particles_by_intensity_types.csv` | Chaque row = 1 particule, toutes les 7 features + cluster ID + type combiné |
+| **Détails de chaque particule ?** | `particles_by_intensity_types.csv` | Chaque row = 1 particule, features directes + dérivées (10 colonnes principales) + cluster ID + type combiné |
 | **Confusion clustering vs classification ?** | `confusion_matrix_types.csv` | Rows = clusters, cols = types combinés. Diagonale = accord, hors-diagonale = divergence |
 | **Analyse spatiale (clusters par région) ?** | `crosstab_clusters_vs_intensity.csv` | Voir comment clusters se distribuent dans les 3 zones (noir/gris/blanc) |
 
@@ -1057,14 +889,13 @@ Gris_Petit_Anguleux,86,11.6%
 ```
 
 **Interprétation** :
-- **Bruit_Optique = 34%** → Image de qualité modérée (bruit optique important)
-- **Particule_Claire = 14%** → Substrat relativement préservé
-- **Carbone_Amorphe_Fin = 8%** → Dépôt en cours, carbone pur début de croissance
+- **Noir_* dominant** → dépôts sombres majoritaires
+- **Gris_* important** → transitions/melanges notables
+- **Blanc_* dominant** → substrat/zone claire majoritaire
 
 **Action** :
-- Si Bruit > 50% → image trop bruitée, améliorer acquisition
-- Si Particule_Claire > 30% → substrat peu affecté, processus précoce
-- Si Carbone > 20% → dépôt avancé, réaction bien engagée
+- Si Noir_* > 50% → depot avancé/aggloméré
+- Si Blanc_* > 30% → depot faible ou précoce
 
 ---
 
@@ -1077,14 +908,14 @@ Gris_Petit_Anguleux,86,11.6%
 **Cause** : KMeans cherche la séparation mathématique, pas l'interprétation physique. Deux gros clusters peut contenir plusieurs types.
 
 **Solutions** :
-- Augmenter `k_max` de 10 à 12-15 pour forcer plus de granularité
+- Ajuster la plage dynamique de k dans le notebook si besoin de granularité
 - Vérifier les seuils (85, 170) : peut-être qu'ils divisent mal les zones
 - Consulter `confusion_matrix_types.csv` : voir quels types sont fusionnés
 - Les types combinés = classification (Intensity × Size × Shape) sont **plus nombreux** que clusters mathématiques. C'est normal !
 
 ---
 
-**❌ "Bruit_Optique domine (>50% des particules)"**
+**❌ "Blanc_Petit_Anguleux domine (>50% des particules)"**
 
 **Cause** : Qualité d'image médiocre, trop d'artefacts optiques détectés.
 
@@ -1113,11 +944,10 @@ Gris_Petit_Anguleux,86,11.6%
 **Cause** : Clusters chevauchés ou mal définis.
 
 **Solutions** :
-- Augmenter poids de la feature discriminante :
-  - Si différence size importante → augmenter poids Size (1.3 → 1.5)
-  - Si différence intensity importante → augmenter poids Intensity (1.4 → 1.6)
-- Ajuster seuils (85, 170) : peut-être 3 zones mal définies
-- Essayer k différents : peut-être que k_optimal n'est pas le bon compromis
+- Vérifier la sélection des features (MeanIntensity, Log_Area_um2, Circularity, Solidity)
+- Ajouter temporairement `AspectRatio` si les formes allongées sont mal séparées
+- Ajuster les seuils 85/170 (classification combinée) si les types sont incohérents
+- Essayer un autre k (via la plage dynamique) si le silhouette est instable
 
 ---
 
@@ -1128,7 +958,7 @@ Gris_Petit_Anguleux,86,11.6%
 **Solutions** :
 - Réduire résolution image de moitié (2000×2000 au lieu de 4000×4000)
 - Augmenter `min_particle_area` pour exclure bruit
-- Réduire fenêtres zone équilibrée (k_min=8, k_max=12 au lieu de 6-10)
+- Réduire les tailles de fenêtres de la zone équilibrée
 - Augmenter `step_size` (ex: 100 au lieu de 50) → moins de positions testées
 
 ---
@@ -1148,7 +978,7 @@ Gris_Petit_Anguleux,86,11.6%
 
 Même image → exécution 1, 2, 3 → **résultats identiques** (k, clusters, classification)
 
-Exception : si on change paramètres (seuils, poids) → résultats changent
+Exception : si on change paramètres (seuils, features) → résultats changent
 
 ---
 
@@ -1166,37 +996,31 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 
 | Paramètre | Plage | Impact k optimal | Restructure clusters | Affecte types | Cas d'usage / Quand ajuster |
 |-----------|-------|------------------|---------------------|---------------|-----------------------------|
-| **thresh1** (seuil Noir/Gris) | 70-100 | ⚠️⚠️⚠️ Fort | ⚠️⚠️⚠️ Complètement | ⚠️⚠️⚠️ Critique | Images basses contrastes : ↓ thresh1 pour capturer carbone sombre |
-| **thresh2** (seuil Gris/Blanc) | 150-190 | ⚠️⚠️⚠️ Fort | ⚠️⚠️⚠️ Complètement | ⚠️⚠️⚠️ Critique | Images hautes contrastes : ↑ thresh2 pour moins d'artefacts optiques |
-| **k_min** | 5-8 | ✓ Limite min | ⚠️ Définit minimum | ⚠️ Modéré | Besoin plus granularité : ↓ k_min |
-| **k_max** | 8-15 | ✓ Limite max | ⚠️ Définit maximum | ⚠️ Modéré | Besoin moins clusters : ↓ k_max |
-| **Poids Size** | 0.8-2.0 | ⚠️ Modéré | ⚠️⚠️ Cluster par taille | ⚠️ Modéré | Cible petites vs grandes : ↑ poids Size à 1.5-1.8 |
-| **Poids Intensity** | 0.8-2.0 | ⚠️ Modéré | ⚠️⚠️ Cluster par composition | ⚠️⚠️ Fort | Cible carbone vs substrat : ↑ poids Intensity à 1.6-1.8 |
-| **Poids Circularity** | 0.5-1.5 | ✓ Faible | ⚠️ Cluster par forme | ✓ Faible | Moins d'importance, laisser 1.0 |
-| **Poids AspectRatio** | 0.5-1.5 | ✓ Faible | ⚠️ Cluster par allongement | ✓ Faible | Souvent corrélé à size, laisser 0.9 |
+| **blockSize** (adaptive threshold) | 11-31 | ✓ Faible | ⚠️ Modéré | ⚠️ Faible | Fond bruité : ↑ blockSize pour lisser localement |
+| **C** (adaptive threshold) | 0-5 | ✓ Faible | ⚠️ Modéré | ⚠️ Faible | Particules trop nombreuses : ↑ C pour rendre le seuil plus strict |
 | **min_particle_area** | 5-30 | ✓ Faible | ⚠️ Exclut bruit | ⚠️ Modéré | Image bruitée : ↑ à 15-20 pour ignorer artefacts |
+| **watershed_ratio** | 0.05-0.2 | ✓ Faible | ⚠️⚠️ Sépare/fusionne | ⚠️ Faible | Sur-segmentation : ↑ ratio ; sous-segmentation : ↓ ratio |
+| **k_range_auto** | dynamique | ⚠️ Modéré | ⚠️ Modéré | ⚠️ Modéré | Si trop de clusters, ajuster la plage dans le notebook |
 | **window_sizes (zone)** | [300..800] | N/A | N/A | N/A | Particules dispersées : ↑ (ex: [400..900]) |
 
 ### Stratégie d'ajustement
 
 ```
-ÉTAPE 1 : Vérifier seuils (85, 170)
-  → Afficher histogramme
-  → Identifier pics naturels
-  → Ajuster thresh1, thresh2 en conséquence
+ÉTAPE 1 : Vérifier histogramme d'intensité
+   → Ajuster les seuils 85/170 si les types combinés sont incohérents
 
 ÉTAPE 2 : Exécuter avec paramètres défaut
-  → Voir résultats (k, types, silhouette)
+   → Voir résultats (k, types, silhouette)
 
-ÉTAPE 3 : Si insatisfait, ajuster pondérations
-  → Poids Size/Intensity si besoin séparation par taille/composition
-  → Relancer clustering (k change généralement peu)
+ÉTAPE 3 : Si segmentation imparfaite
+   → Ajuster blockSize/C et min_particle_area
+   → Ajuster watershed_ratio si sur/sous-segmentation
 
-ÉTAPE 4 : Si clusters trop fragmentés (k=12+)
-  → Réduire k_max à 8-10
+ÉTAPE 4 : Si clusters trop fragmentés
+   → Ajuster la plage dynamique de k dans le notebook
 
 ÉTAPE 5 : Si zone équilibrée non trouvée
-  → Agrandir window_sizes ou réduire step_size
+   → Agrandir window_sizes ou réduire step_size
 ```
 
 ---
@@ -1217,7 +1041,7 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 
 **Artefacts optiques**
 - Bruits instrumentaux : défauts détecteur, vibrations, reflets
-- Résultat : petites particules très claires (Bruit_Optique dans classification)
+- Résultat : petites particules très claires (souvent classées "Blanc_Petit_Anguleux")
 - Identifiables : taille < 50 pixels, intensité très élevée
 
 ### Morphologie et formes
@@ -1247,7 +1071,7 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 **Classification (étiquetage)**
 - Assigner **labels interprétables** (types combinés)
 - Rule-based = utilise IF-ELSE sur features
-- Résultat : labels comme "Carbone_Amorphe_Fin"
+- Résultat : labels comme "Noir_Petit_Rond"
 
 **Centroïde**
 - Centre géométrique d'un cluster = moyenne de tous les points
@@ -1265,7 +1089,7 @@ Aucun code à modifier, tout configurable via paramètres simplement dans le not
 - Problème : toujours décroît avec k → normaliser
 
 **PCA (Principal Component Analysis)**
-- Réduction dimensionnelle : 6D → 3D
+- Réduction dimensionnelle : features dispo (jusqu'à 6) → 3D
 - Cherche directions avec variance maximale
 - PC1 capture 35%, PC2 capture 25%, PC3 capture 15% → total 75%
 
@@ -1342,15 +1166,15 @@ PRÉPARATION IMAGE :
 ☐ Résolution suffisante (particules ≥ 10-20 pixels, idéal > 50)
 
 PARAMÈTRES CHECKLIST :
-☐ thresh1, thresh2 : vérifiés visuellement sur 1-2 images
-☐ k_min, k_max : plage [6,10] appropriée (ou [8,12] si plus de types)
-☐ Poids features : ajustés selon importance physique
+☐ blockSize, C : vérifiés sur 1-2 images (segmentation adaptative)
+☐ watershed_ratio : ajusté si sur/sous-segmentation
+☐ k_range_auto : plage dynamique raisonnable (selon N)
 ☐ min_particle_area : au moins 5, idéal 10-20 si bruitée
 
 ATTENTES :
-☐ k optimal ∈ [6,12]
+☐ k optimal ∈ [2,10]
 ☐ Types observés ≈ k ± 2
-☐ Bruit_Optique < 50%
+☐ Blanc_* < 50%
 ```
 
 ### Après résultats - Validation qualité
@@ -1368,9 +1192,8 @@ COUVERTURE PARTICULES :
 ☐ Pas de particule = 100% cluster (= biais spatial)
 
 QUALITÉ CLUSTERING :
-☐ k optimal ∈ [6,12] (plage réaliste)
+☐ k optimal ∈ [2,10] (plage dynamique)
 ☐ Silhouette score > 0.40 (clusters bien séparés)
-☐ Inertia normalisée > 0.50 (clusters compacts)
 
 ZONE ÉQUILIBRÉE :
 ☐ Trouvée (score > 0.70 = excellent)
@@ -1418,23 +1241,23 @@ IMAGE BRUTE (JPEG/PNG)
     ↓
 IMAGE AMÉLIORÉE
     ↓
-[ÉTAPE 2] Segmentation 3 zones (seuils 85, 170)
-    ↓
-3 MASQUES BINAIRES (Noir, Gris, Blanc)
-    ↓
-[ÉTAPE 3] Morphologie (ouverture) + Détection contours
-    ↓
+[ÉTAPE 2] Adaptive threshold + hole filling + filtre taille
+   ↓
+MASQUE BINAIRE PROPRE
+   ↓
+[ÉTAPE 3] Watershed (séparation) + détection contours
+   ↓
 ~500-1000 CONTOURS DÉTECTÉS
-    ↓
-[ÉTAPE 4] Extraction 7 features (Area, Circularity, Intensity, etc.)
-    ↓
+   ↓
+[ÉTAPE 4] Extraction features physiques (Area_um2, Log_Area_um2, Intensity, etc.)
+   ↓
 TABLEAU DONNÉES (rows=particules, cols=features)
-    ↓
-[ÉTAPE 5] Normalisation StandardScaler + Pondération manuelle
-    ↓
-FEATURES NORMALISÉES PONDÉRÉES
-    ↓
-[ÉTAPE 6] KMeans : test k∈[6,10], scoring (silhouette + inertie)
+   ↓
+[ÉTAPE 5] Normalisation StandardScaler (4 features)
+   ↓
+FEATURES NORMALISÉES
+   ↓
+[ÉTAPE 6] KMeans : k dynamique, scoring silhouette (inertie info)
    ↓
 CLUSTERING OPTIMAL (k=best_k, clusters assignés)
    ↓
@@ -1444,7 +1267,7 @@ INTERPRÉTATION CLUSTERS (Cluster_Label + Cluster_Description)
    ↓
 TYPES COMBINÉS ASSIGNÉS (12 types)
    ↓
-[ÉTAPE 8] PCA 3D (6D → 3D), Zone équilibrée (balayage Wasserstein)
+[ÉTAPE 8] PCA 3D (features dispo → 3D), Zone équilibrée (balayage Wasserstein)
     ↓
 RÉSULTATS FINAUX :
   • 14 fichiers CSV détaillés
@@ -1479,19 +1302,19 @@ Ex: "Noir_Petit_Rond", "Gris_Grand_Anguleux"
 
 ```
 DÉCISION 1 : Seuils (85, 170) - CRITIQUE
-  Impact : Complètement restructure segmentation
-  Validation : Afficher histogramme + masques visuels
-  Risque : Mauvais seuils = tout cassé après
+   Impact : Affecte la classification combinée
+   Validation : Afficher histogramme + distribution des types
+   Risque : Mauvais seuils = types incohérents
   
-DÉCISION 2 : Range k (6-10) - MOYEN
+DÉCISION 2 : Range k (dynamique) - MOYEN
   Impact : Structure clustering mais pas drastique
   Validation : Voir silhouette par k
-  Risque : k_max trop bas = sous-segmentation
+   Risque : plage k trop restrictive = sous-segmentation
   
-DÉCISION 3 : Pondérations poids - MOYEN
-  Impact : Change quels features discriminent
-  Validation : Observer si clusters cohérents physiquement
-  Risque : Poids mal choisis = clusters contre-intuitifs
+DÉCISION 3 : Sélection des features - MOYEN
+   Impact : Change quels features discriminent
+   Validation : Observer si clusters cohérents physiquement
+   Risque : Features mal choisies = clusters contre-intuitifs
   
 DÉCISION 4 : min_particle_area - FAIBLE
   Impact : Exclut bruit petit mais peut exclure vraies particules
@@ -1520,7 +1343,7 @@ Checks automatiques :
 ✓ Rapport : k=?, types=?, différence=?
 
 If différence ≤ 2 : ✓ COHÉRENT
-If différence > 2 : ⚠️ INVESTIGATE seuils ou pondérations
+If différence > 2 : ⚠️ INVESTIGATE seuils ou segmentation
 ```
 
 ### Validation visuelle
@@ -1528,7 +1351,7 @@ If différence > 2 : ⚠️ INVESTIGATE seuils ou pondérations
 **Comparaison overlay clusters sur image**
 - Exécuter Cell : affiche image originale + contours colorés par cluster
 - Observation : clusters doivent être **spatialement cohérents** (pas patchwork aléatoire)
-- Problème : clusters "saltpeppered" = pondérations mal ajustées
+- Problème : clusters "saltpeppered" = segmentation ou features mal ajustés
 
 ### Validation manuelle (pour ~10 particules)
 
@@ -1545,7 +1368,7 @@ PROTOCOLE :
 ÉVALUATION :
 - Accord ≥ 8/10 : excellent, pipeline fiable
 - Accord 6-8/10 : bon, quelques ajustements
-- Accord < 6/10 : problème, revoir seuils/pondérations
+- Accord < 6/10 : problème, revoir seuils/segmentation
 ```
 
 ### Validation croisée (reproductibilité stochastique)
@@ -1572,9 +1395,9 @@ RÉSULTAT ATTENDU :
 PROCESSUS :
 1. Fixer tous paramètres défaut
 2. Varier 1 paramètre à la fois (±10%) :
-   thresh1: 85 → [75, 85, 95]
-   thresh2: 170 → [160, 170, 180]
-   poids Size: 1.3 → [1.2, 1.3, 1.4]
+   blockSize: 15 → [13, 15, 17]
+   C: 2 → [1, 2, 3]
+   watershed_ratio: 0.1 → [0.08, 0.1, 0.12]
 3. Observer comment k, silhouette, types changent
 
 RÉSULTAT ATTENDU :
@@ -1644,7 +1467,7 @@ C'est la méthode **recommandée** car elle permet d'exécuter le code **cellule
 
 **Avantages** :
 - ✅ Voir chaque étape du processus
-- ✅ Modifier paramètres facilement (seuils, k_min, k_max, etc.)
+- ✅ Modifier paramètres facilement (seuils, segmentation, k_range, etc.)
 - ✅ Déboguer si erreur
 - ✅ Visualiser graphiques immédiatement
 
@@ -1680,39 +1503,37 @@ Différents **paramètres critiques** peuvent être ajustés selon les caractér
 
 | Paramètre | Localisation | Description | Plage typique |
 |-----------|--------------|-------------|----------------|
-| `thresh1` | Cellule 4 | Seuil séparant zone NOIRE/GRISE | 70-100 (défaut: 85) |
-| `thresh2` | Cellule 4 | Seuil séparant zone GRISE/BLANCHE | 150-190 (défaut: 170) |
-| `k_min` | Cellule 17 | Nombre minimum de clusters testé | 5-8 (défaut: 6) |
-| `k_max` | Cellule 17 | Nombre maximum de clusters testé | 8-15 (défaut: 10) |
-| `min_particle_area` | Cellule 8 | Seuil aire minimale (pixels²) | 5-20 (défaut: 5) |
+| `blockSize` | Cellule segmentation | Taille de fenêtre adaptive threshold | 11-31 (défaut: 15) |
+| `C` | Cellule segmentation | Constante du threshold adaptatif | 0-5 (défaut: 2) |
+| `min_particle_area` | Cellule segmentation | Seuil aire minimale (pixels²) | 5-30 (défaut: MIN_AREA_PX) |
+| `watershed_ratio` | Cellule Watershed | Seuil dist transform (ratio) | 0.05-0.2 (défaut: 0.1) |
 
 **Exemple d'ajustement**
 
-Si les seuils 85 et 170 ne séparent pas bien les 3 zones sur votre image :
-1. Afficher l'histogramme pour identifier les pics réels
-2. Ajuster thresh1 et thresh2 pour placer les seuils dans les vallées
-3. Réexécuter les cellules suivantes
+Si la segmentation est trop aggressive ou trop permissive :
+1. Ajuster `blockSize` et `C` pour stabiliser le masque binaire
+2. Ajuster `min_particle_area` pour retirer le bruit résiduel
+3. Ajuster `watershed_ratio` si les particules sont sur/sous-segmentees
+4. Réexécuter les cellules suivantes
 
-#### Adapter la pondération des features
+#### Adapter la sélection des features
 
-La **pondération** reflète l'importance physique relative de chaque feature. Par défaut :
+Le clustering utilise **4 features directes**. Vous pouvez ajuster la liste si nécessaire :
 
 ```python
-ponderations = [1.3, 1.0, 0.9, 1.0, 1.4]
-# Pour : [Size, Circularity, AspectRatio, Solidity, Intensity]
+features_cols = [
+   "MeanIntensity",
+   "Log_Area_um2",
+   "Circularity",
+   "Solidity",
+]
 ```
 
-**Comment ajuster** (Cellule 12) :
-- **Augmenter un poids** (ex: 1.3 → 1.5) pour **priortiser** cette feature
-- **Diminuer un poids** (ex: 0.9 → 0.7) pour **déprioritizer** cette feature
+**Comment ajuster** :
+- Ajouter `AspectRatio` si les particules allongées sont mal séparées.
+- Retirer `Circularity` ou `Solidity` si elles sont trop corrélées sur vos données.
 
-**Exemple** : Si on veut davantage différencier par forme que par taille :
-```python
-ponderations = [0.8, 1.2, 1.2, 1.2, 1.0]
-# Size réduit, features de forme augmentées
-```
-
-**Note** : Les poids par défaut [1.3, 1.0, 0.9, 1.0, 1.4] reflètent l'importance physique documentée. Les modifier peut changer les résultats de clustering significativement.
+**Note** : Toute modification de `features_cols` change le clustering et peut modifier `best_k`.
 
 ---
 
@@ -1762,24 +1583,23 @@ Score représentativité : 0.78 (Excellent)
 
 #### 4. Silhouette et inertie
 
-**Interprétation des scores obtus**
+**Interprétation des scores**
 
 Pour une image type avec k testé de 6 à 10 :
 
 ```
-k=6  : Silhouette=0.395 | Inertie normalisée=0.87 | Score combiné=0.42
-k=7  : Silhouette=0.410 | Inertie normalisée=0.92 | Score combiné=0.45
-k=8  : Silhouette=0.415 | Inertie normalisée=0.96 | Score combiné=0.48
-k=9  : Silhouette=0.425 | Inertie normalisée=1.00 | Score combiné=0.50 ← OPTIMAL
-k=10 : Silhouette=0.427 | Inertie normalisée=1.00 | Score combiné=0.50
+k=6  : Silhouette=0.395 | Inertie= 8200.5
+k=7  : Silhouette=0.410 | Inertie= 7604.2
+k=8  : Silhouette=0.415 | Inertie= 7051.8
+k=9  : Silhouette=0.425 | Inertie= 6720.9 ← OPTIMAL
+k=10 : Silhouette=0.427 | Inertie= 6602.1
 ```
 
 **Lecture des résultats**
 
 - **Silhouette augmente légèrement** de 0.395 (k=6) à 0.427 (k=10) : clusters deviennent progressivement mieux séparés
-- **Inertie normalisée augmente** : à k=9, elle atteint le maximum (1.00), puis plafonne
-- **Score combiné culmine** à k=9-10 : légère amélioration après c'est marginal
-- **Recommandation** : Si 12 types combinés observés, choisir **k=10** pour correspondance approximative types-clusters
+- **Inertie diminue** avec k (information secondaire)
+- **Recommandation** : Choisir le k au **silhouette maximal**
 
 ---
 
@@ -1791,20 +1611,20 @@ k=10 : Silhouette=0.427 | Inertie normalisée=1.00 | Score combiné=0.50
 - [ ] **Entropie** > 6.0 (richesse info)
 - [ ] **SNR** > 2.5 (signal bon)
 - [ ] **Particules détectées** > 100 (couverture suffisante)
-- [ ] **k optimal** ∈ [6, 10] (plage physiquement réaliste)
+- [ ] **k optimal** ∈ [2, 10] (plage dynamique)
 - [ ] **Silhouette score** > 0.40 (clusters séparés)
 - [ ] **Zone équilibrée trouvée** ? (score > 0.70)
 - [ ] **Types uniques** > k/2 (pas sur-fragmenté)
 
 ### Validation interne
 - **Cohérence clustering vs classification** : écart |k_optimal - types_observés| ≤ 2
-- **Indicateurs qualité** : silhouette, inertie normalisée, entropie locale
+- **Indicateurs qualité** : silhouette, inertie (brute), entropie locale
 - **Vérification spatiale** : zone équilibrée contient tous les clusters
 
 ### Robustesse méthodologique
 - **StandardScaler** : normalise l'effet d'échelle entre features
-- **Pondération contrôlée** : reflète importance physique (taille × 1.3, AspectRatio × 0.9)
-- **Double vue clustering** : pondérée + 3D normalisée → évite biais uniques
+- **Features physiques directes** : évite les biais de pondération
+- **Double vue clustering** : 2D + 3D → évite biais uniques
 - **Wasserstein + Entropie** : métriques robustes aux classes rares
 
 ### Limitations et recommandations
@@ -1824,9 +1644,9 @@ k=10 : Silhouette=0.427 | Inertie normalisée=1.00 | Score combiné=0.50
 **Sensibilité aux paramètres**
 | Paramètre | Sensibilité | Impact |
 |-----------|-------------|--------|
-| Seuils (85, 170) | ⚠️ Haute | Affecte tout (segmentation → types) |
-| k_min, k_max | ⚠️ Modérée | Change k optimal mais pas radicalement |
-| Pondérations | ⚠️ Modérée | Ajuste importance relative features |
+| Seuils (85, 170) | ⚠️ Haute | Affecte surtout la classification des types |
+| k_range_auto | ⚠️ Modérée | Change k optimal mais pas radicalement |
+| Sélection features | ⚠️ Modérée | Change la séparation des clusters |
 | CLAHE clipLimit | ⚠️ Basse | Améliore contraste progressivement |
 | Min_area particules | ✓ Basse | Exclut seulement les très petits artefacts |
 
@@ -1891,7 +1711,7 @@ k=10 : Silhouette=0.427 | Inertie normalisée=1.00 | Score combiné=0.50
 | RobustScaler | $(x - Q2)/IQR$ | Données avec outliers marqués |
 | Log transform | $\log(x)$ | Distributions très asymétriques |
 
-**Décision** : StandardScaler car features Raman ~ gaussiennes après pondération
+**Décision** : StandardScaler car features Raman ~ gaussiennes après normalisation
 
 #### Wasserstein vs autres distances
 | Distance | Robustesse | Interprétabilité | Complexité |
