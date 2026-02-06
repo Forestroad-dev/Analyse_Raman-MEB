@@ -93,57 +93,92 @@ Analyser une image Raman pour **détecter automatiquement** les particules, les 
 
 ## 🏗️ Architecture du Pipeline
 
+### Architecture globale (vue macro)
+
 ```
-┌────────────────────────────────────────────┐
-│ 1. CHARGEMENT + PRÉ-TRAITEMENT             │
-│    • Conversion RGB → Niveaux gris         │
-│    • Évaluation qualité (8 métriques)      │
-│    • CLAHE (amélioration contraste)        │
-└────────────┬─────────────────────────────┘
-             ↓
-┌────────────────────────────────────────────┐
-│ 2. SEGMENTATION ADAPTATIVE + WATERSHED     │
-│    • Adaptive threshold + hole filling     │
-│    • Filtre taille (calibration µm)        │
-│    • Watershed (séparation particules)     │
-└────────────┬─────────────────────────────┘
-             ↓
-┌────────────────────────────────────────────┐
-│ 3. DÉTECTION PARTICULES                    │
-│    • Contours sur masque séparé            │
-│    • Features physiques + intensité réelle │
-│    • DataFrame ~200-1000 particules        │
-└────────────┬─────────────────────────────┘
-             ↓
-┌────────────────────────────────────────────┐
-│ 4. CLUSTERING MULTI-PARAMÈTRES             │
-│    • StandardScaler sur 4 features         │
-│    • KMeans, k dynamique (silhouette)      │
-│    • Interprétation clusters (labels/desc) │
-└────────────┬─────────────────────────────┘
-             ↓
-┌────────────────────────────────────────────┐
-│ 5. CLASSIFICATION COMBINÉE                 │
-│    • Intensité × Taille × Forme            │
-│    • Sortie : 12 types combinés            │
-└────────────┬─────────────────────────────┘
-             ↓
-┌────────────────────────────────────────────┐
-│ 6. PCA 3D (Visualisation)                  │
-│    • Features dispo → 3D (variance ~75%)   │
-└────────────┬─────────────────────────────┘
-             ↓
-┌────────────────────────────────────────────┐
-│ 7. ZONE ÉQUILIBRÉE                         │
-│    • Balayage fenêtres : tous clusters OK  │
-│    • Score Wasserstein + entropie          │
-└────────────┬─────────────────────────────┘
-             ↓
-┌────────────────────────────────────────────┐
-│ 8. VISUALISATIONS + RAPPORTS               │
-│    • Scatter, heatmaps, tableaux           │
-│    • Export CSV/JSON                       │
-└────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│ 0. ENTRÉES                                    │
+│    • Image brute (RGB)                        │
+│    • Paramètres (seuils, calibration, etc.)   │
+└───────────────┬───────────────────────────────┘
+                ↓
+┌───────────────────────────────────────────────┐
+│ 1. PRÉ-TRAITEMENT + QUALITÉ                   │
+│    • RGB → Gris                               │
+│    • 8 métriques qualité                      │
+│    • CLAHE                                   │
+└───────────────┬───────────────────────────────┘
+                ↓
+┌───────────────────────────────────────────────┐
+│ 2. SEGMENTATION + SÉPARATION                  │
+│    • Adaptive threshold + nettoyages          │
+│    • Filtre taille (calibration µm)           │
+│    • Watershed                                │
+└───────────────┬───────────────────────────────┘
+                ↓
+┌───────────────────────────────────────────────┐
+│ 3. EXTRACTION FEATURES                         │
+│    • Contours                                 │
+│    • 10 features physiques + intensité        │
+│    • DataFrame particules                      │
+└───────────────┬───────────────────────────────┘
+                ↓
+┌───────────────────────────────────────────────┐
+│ 4. ANALYSES STATISTIQUES                       │
+│    • Normalisation + KMeans                    │
+│    • Interprétation clusters                   │
+│    • Classification combinée                   │
+│    • PCA 3D                                    │
+│    • Zone équilibrée                           │
+└───────────────┬───────────────────────────────┘
+                ↓
+┌───────────────────────────────────────────────┐
+│ 5. SORTIES                                     │
+│    • CSV + figures + rapports                  │
+└───────────────────────────────────────────────┘
+```
+
+### Architecture des sous-étapes (vue détaillée)
+
+```
+1) PRE-TRAITEMENT + QUALITE
+   1.1 Chargement image
+   1.2 Conversion RGB -> Gris
+   1.3 Metrics qualite (8)
+   1.4 CLAHE (clipLimit, tileGrid)
+
+2) SEGMENTATION + SEPARATION
+   2.1 Flou gaussien leger
+   2.2 Adaptive threshold (blockSize, C)
+   2.3 Ouverture morphologique
+   2.4 Hole filling
+   2.5 Filtre taille (MIN_AREA_PX)
+   2.6 Distance transform
+   2.7 Watershed (separation)
+
+3) EXTRACTION FEATURES
+   3.1 Contours sur masque separe
+   3.2 Aire, perimetre, circularite
+   3.3 AspectRatio, solidity
+   3.4 Intensite moyenne (sur image grise)
+   3.5 Centroide (X, Y)
+   3.6 Conversion um2 + log
+   3.7 DataFrame particules
+
+4) ANALYSES STATISTIQUES
+   4.1 Selection features (4)
+   4.2 StandardScaler
+   4.3 K dynamique (silhouette)
+   4.4 KMeans final
+   4.5 Labels + descriptions clusters
+   4.6 Types combines (I x Taille x Forme)
+   4.7 PCA 3D
+   4.8 Zone equilibree (balayage + scoring)
+
+5) SORTIES
+   5.1 CSV (tables + crosstabs + pivots)
+   5.2 Figures (scatter, heatmaps, overlays)
+   5.3 Rapports (validation, diagnostics)
 ```
 
 ---
@@ -1330,6 +1365,88 @@ DÉCISION 5 : Zone équilibrée paramètres - MOYEN
 ---
 
 ## 🔐 VALIDATION & QUALITÉ ASSURANCE
+
+### Comment estimer la fiabilite des donnees, observations et resultats ?
+
+L idee est de separer la fiabilite en 3 niveaux : **donnees**, **resultats intermediaires**, **observations finales**. Chaque niveau doit avoir des indicateurs objectifs + une verification visuelle.
+
+#### 1) Fiabilite des donnees (image brute)
+
+| Indicateur | Seuils pratiques | Interprétation | Risque si faible |
+|-----------|------------------|----------------|------------------|
+| Contraste (std) | > 20 | Signal suffisant | Segmentation instable |
+| Entropie | > 6.0 | Image riche | Zones uniformes trompeuses |
+| SNR | > 2.5 | Signal > bruit | Faux positifs |
+| Plage dynamique | > 200 | Bonne utilisation 0-255 | Saturation / manque de detail |
+
+**Conclusion** : si 2+ indicateurs sont en dessous des seuils, fiabilite **faible** des donnees.
+
+#### 2) Fiabilite des resultats intermediaires
+
+**Segmentation**
+- Controle visuel overlay : contours doivent suivre les particules reelles.
+- Si beaucoup de contours sur du vide ou du bruit : fiabilite faible.
+
+**Features**
+- Distribution des tailles et circularites : pas d anomalies extremes (ex: tout a 0 ou 1).
+- Comparer moyenne taille/intensite avec ce qui est attendu physiquement.
+
+**Clustering (KMeans)**
+- Silhouette > 0.40 : separation correcte.
+- Stabilite k : meme k sur 2-3 runs (random_state fixe).
+- Si silhouette < 0.30 ou k instable : fiabilite faible.
+
+**Classification combinee**
+- Cohérence : types uniques ≈ k ± 2.
+- Pas de type dominant > 80% (sauf cas physiquement attendu).
+
+#### 3) Fiabilite des observations finales
+
+**Zone equilibree**
+- Score > 0.70 + tous clusters presents.
+- Validation visuelle : zone represente bien l image globale.
+
+**Conclusion physique**
+- Verification experte : accord qualitatif avec l experience.
+- Si interpretation contredit la physico-chimie connue, fiabilite faible.
+
+#### Regle simple de synthese (score qualitatif)
+
+- **Fiabilite forte** : donnees OK + segmentation OK + silhouette > 0.40 + zone equilibree OK
+- **Fiabilite moyenne** : 1 point faible mais resultats globalement coherents
+- **Fiabilite faible** : 2+ points faibles ou contradictions visuelles
+
+#### Score de fiabilite (0-100) avec ponderations
+
+Proposition de score simple, interpretable, et stable :
+
+$$\text{Score} = 100 \times (0.35 \times Q + 0.25 \times S + 0.25 \times C + 0.15 \times Z)$$
+
+Avec :
+- $Q$ = qualite des donnees (0 a 1)
+- $S$ = qualite segmentation/features (0 a 1)
+- $C$ = qualite clustering/classification (0 a 1)
+- $Z$ = qualite zone equilibree (0 a 1)
+
+**Exemple de regles de scoring (0, 0.5, 1)**
+
+- $Q$ : 1 si Contraste>20, Entropie>6, SNR>2.5, Plage>200; 0.5 si 1-2 seuils manquent; 0 si 3+ manquent.
+- $S$ : 1 si overlay propre; 0.5 si bruit modere; 0 si sur/sous-segmentation evidente.
+- $C$ : 1 si silhouette>0.40 et k stable; 0.5 si silhouette 0.30-0.40; 0 si <0.30 ou instable.
+- $Z$ : 1 si score>0.70 et tous clusters; 0.5 si score 0.50-0.70; 0 si pas de zone valide.
+
+**Lecture rapide**
+- 80-100 : fiabilite forte
+- 60-79 : fiabilite moyenne
+- < 60 : fiabilite faible
+
+#### Ou trouver ces indicateurs dans le notebook
+
+- Qualite image (contraste, entropie, SNR, dynamique): [analyse_raman_structured.ipynb](Image_RAMA/raman_project/notebooks/analyse_raman_structured.ipynb#L200-L320)
+- Segmentation overlay (preuve visuelle): [analyse_raman_structured.ipynb](Image_RAMA/raman_project/notebooks/analyse_raman_structured.ipynb#L775-L835)
+- Silhouette et choix de k: [analyse_raman_structured.ipynb](Image_RAMA/raman_project/notebooks/analyse_raman_structured.ipynb#L740-L860)
+- Interpretation physique (labels/description clusters): [analyse_raman_structured.ipynb](Image_RAMA/raman_project/notebooks/analyse_raman_structured.ipynb#L1580-L1685)
+- Zone equilibree (score + visualisation): [analyse_raman_structured.ipynb](Image_RAMA/raman_project/notebooks/analyse_raman_structured.ipynb#L2700-L3060)
 
 ### Auto-validation dans le pipeline
 
